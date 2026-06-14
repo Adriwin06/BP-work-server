@@ -30,10 +30,26 @@ This repo contains an MVP server:
 PostgreSQL is the right production database once more people are using it, but
 the public protocol should not need to change.
 
-## Setup
+## Quick Start
+
+From the repo root, `launch.ps1` sets up a local `.venv`, refreshes the database
+from the workflow checkout, and serves. It resolves every path relative to
+itself, so the repo can live anywhere.
 
 ```powershell
-cd E:\Reverse_Engineering\Burnout\BP-work-server
+.\launch.ps1                                  # serve on 127.0.0.1:8765
+.\launch.ps1 -HostName 0.0.0.0 -Port 8765     # bind for LAN access
+.\launch.ps1 -NoImport                         # serve existing db, skip import
+```
+
+By default the workflow checkout is expected as a sibling folder
+(`..\BP-Decomp_Workflow`). Override with `-WorkflowRoot <path>` or the
+`BP_WORKFLOW_ROOT` environment variable; override the database with `-Db` or
+`BP_WORK_DB`.
+
+## Manual Setup
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e .[dev]
@@ -42,7 +58,7 @@ python -m pip install -e .[dev]
 ## Import Workflow Progress
 
 ```powershell
-bp-work-server --db data\bp-work.sqlite3 import E:\Reverse_Engineering\Burnout\BP-Decomp_Workflow --reset
+bp-work-server --db data\bp-work.sqlite3 import ..\BP-Decomp_Workflow --reset
 ```
 
 Expected scale for the current workflow snapshot:
