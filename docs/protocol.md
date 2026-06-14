@@ -12,6 +12,28 @@ Those stay in `BP-Decomp_Workflow` and Git.
 - Git remains authoritative for code review and source changes.
 - A TU should become `done` only after the local compile/review policy has passed.
 
+## Authentication (worker ids)
+
+Access is gated by a **server-issued worker id (token)**, so the server URL does not need
+to be secret — knowing the URL is not enough, you need a valid id. The maintainer mints
+ids and hands them out privately.
+
+- Each id maps to a **username**. Clients send the id in the `X-Work-Token` header; the
+  server resolves it to the username and records the **username** as the claim owner. The
+  id itself is never stored on TU rows or in the event log.
+- Enforcement is **on by default** (`BP_WORK_REQUIRE_TOKEN=1`). Every write endpoint
+  (`/claims`, `/claims/next`, heartbeat, release, `/tu/*`) requires a valid id; a
+  missing/invalid/revoked id returns `401`. Read endpoints and the dashboard stay open.
+  Set `BP_WORK_REQUIRE_TOKEN=0` (or `false`/`no`/`off`) to disable it for a fully
+  private/trusted deployment, in which case the request body `agent` is used.
+- **Admin is a role on a worker id** (`is_admin`), not a separate shared secret — there is
+  no `BP_WORK_ADMIN_TOKEN`. The `/admin/*` endpoints (mint/list/revoke ids, import, sync,
+  reset) require an id whose worker has the admin role: a non-admin id gets `403`, a
+  missing/invalid id `401`. Bootstrap the first admin on the host with the direct-DB CLI
+  `bp-work-server worker add <name> --admin` (needs no existing admin).
+- Revoking an id immediately blocks it; existing claims are unaffected until their lease
+  expires or they are reassigned. Worker ids survive `/admin/sync?reset=true`.
+
 ## Statuses
 
 | Status | Meaning |
@@ -41,6 +63,28 @@ and `progress/goals.json` from the workflow repo.
 
 Use `reset=true` for the initial import or for rebuilding a disposable dev server.
 Avoid `reset=true` on a live server unless you intentionally want to discard claims.
+
+All `/admin/*` endpoints require an `X-Work-Token` whose worker has the admin role.
+
+### `POST /admin/workers`  (admin)
+
+Mints a new worker id bound to a username. `is_admin` grants the new id the admin role.
+Returns the id once — give it to the user privately; they set it as `WORK_AGENT`.
+
+```json
+// request
+{ "username": "Adrian", "is_admin": false }
+// response (201)
+{ "token": "AbC123…urlsafe", "username": "Adrian", "is_admin": false }
+```
+
+### `GET /admin/workers`  (admin)
+
+Lists workers (`token`, `username`, `active`, `is_admin`, `created_at`, `last_seen`).
+
+### `DELETE /admin/workers/{token}`  (admin)
+
+Revokes a worker id (`204`; `404` if unknown). Revoked ids can no longer authenticate.
 
 ### `GET /next?n=5&goal=boot-trace`
 

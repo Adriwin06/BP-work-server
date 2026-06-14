@@ -19,9 +19,21 @@ class WorkServerError(RuntimeError):
 class WorkServerClient:
     base_url: str
     timeout: float = 30.0
+    token: str | None = None  # X-Work-Token (server-issued worker id; admin role = admin id)
 
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/health")
+
+    def create_worker(self, username: str, is_admin: bool = False) -> dict[str, Any]:
+        return self._request(
+            "POST", "/admin/workers", {"username": username, "is_admin": is_admin}
+        )
+
+    def list_workers(self) -> dict[str, Any]:
+        return self._request("GET", "/admin/workers")
+
+    def revoke_worker(self, token: str) -> dict[str, Any]:
+        return self._request("DELETE", f"/admin/workers/{self._path(token)}")
 
     def next(self, n: int = 1, goal: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"n": n}
@@ -108,6 +120,8 @@ class WorkServerClient:
         url = self.base_url.rstrip("/") + path
         data = None
         headers = {"Accept": "application/json"}
+        if self.token:
+            headers["X-Work-Token"] = self.token
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"

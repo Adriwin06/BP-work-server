@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from urllib.parse import quote
 
@@ -8,7 +9,15 @@ from bp_work_server.api import create_app
 from bp_work_server.store import WorkStore, iso
 
 
-def make_client(tmp_path) -> TestClient:
+@pytest.fixture(autouse=True)
+def _disable_enforcement(monkeypatch):
+    # These tests exercise API/dashboard behavior, not auth (auth lives in test_auth.py).
+    # Run them with token enforcement off so body `agent` is used directly. Admin
+    # endpoints still require an admin worker id regardless of this switch.
+    monkeypatch.setenv("BP_WORK_REQUIRE_TOKEN", "0")
+
+
+def make_client(tmp_path) -> tuple[TestClient, WorkStore]:
     store = WorkStore(tmp_path / "api.sqlite3")
     store.migrate()
     with store.connect() as con:
@@ -23,11 +32,11 @@ def make_client(tmp_path) -> TestClient:
         )
         con.execute("INSERT INTO func(name, tu_id) VALUES('A::Run', 'GameSource/A.cpp')")
         con.execute("INSERT INTO func(name, tu_id) VALUES('B::Run', 'GameSource/B.cpp')")
-    return TestClient(create_app(store))
+    return TestClient(create_app(store)), store
 
 
 def test_dashboard_page_and_state(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
 
     page = client.get("/")
     state = client.get("/dashboard/state")
@@ -42,7 +51,7 @@ def test_dashboard_page_and_state(tmp_path):
 
 
 def test_claim_updates_dashboard_agents(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
 
     response = client.post(
         "/claims",
@@ -57,7 +66,7 @@ def test_claim_updates_dashboard_agents(tmp_path):
 
 
 def test_path_encoded_tu_status_endpoints(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
     tu = "GameSource/B.cpp"
     encoded = quote(tu, safe="")
 
@@ -82,7 +91,7 @@ def test_path_encoded_tu_status_endpoints(tmp_path):
 
 
 def test_explorer_search_filter_and_detail(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
 
     facets = client.get("/api/facets").json()
     assert "decfigs" in facets["sources"]
@@ -106,23 +115,22 @@ def test_explorer_search_filter_and_detail(tmp_path):
     assert missing.status_code == 404
 
 
-def test_admin_import_requires_token_when_configured(tmp_path, monkeypatch):
-    monkeypatch.setenv("BP_WORK_ADMIN_TOKEN", "secret-token")
-    client = make_client(tmp_path)
+def test_admin_endpoints_require_admin_role(tmp_path):
+    client, store = make_client(tmp_path)
+    user = store.create_worker("regular")
 
-    missing = client.post("/admin/import?workflow_root=missing")
-    wrong = client.post(
+    # no id -> 401
+    assert client.post("/admin/import?workflow_root=missing").status_code == 401
+    # a non-admin id -> 403
+    assert client.post(
         "/admin/import?workflow_root=missing",
-        headers={"X-BP-Admin-Token": "wrong"},
-    )
-
-    assert missing.status_code == 401
-    assert wrong.status_code == 401
+        headers={"X-Work-Token": user["token"]},
+    ).status_code == 403
 
 
 def test_admin_sync_calls_fixed_server_side_sync(tmp_path, monkeypatch):
-    monkeypatch.setenv("BP_WORK_ADMIN_TOKEN", "secret-token")
-    client = make_client(tmp_path)
+    client, store = make_client(tmp_path)
+    admin = store.create_worker("boss", is_admin=True)
 
     def fake_sync(store, branch=None, reset=False):
         assert branch == "main"
@@ -142,7 +150,7 @@ def test_admin_sync_calls_fixed_server_side_sync(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "sync_workflow_repo", fake_sync)
     response = client.post(
         "/admin/sync",
-        headers={"X-BP-Admin-Token": "secret-token"},
+        headers={"X-Work-Token": admin["token"]},
         json={"branch": "main", "commit": "abc123", "reset": False},
     )
 

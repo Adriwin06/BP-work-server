@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import secrets
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from pathlib import Path
@@ -30,6 +29,9 @@ from bp_work_server.models import (
     StatusUpdateRequest,
     SyncRequest,
     SyncResponse,
+    WorkerCreateRequest,
+    WorkerListResponse,
+    WorkerResponse,
 )
 from bp_work_server.store import WorkStore
 from bp_work_server.sync import sync_workflow_repo
@@ -39,12 +41,14 @@ def default_db_path() -> Path:
     return Path(os.environ.get("BP_WORK_DB", "data/bp-work.sqlite3"))
 
 
-def require_admin_token(x_bp_admin_token: str | None = Header(default=None)) -> None:
-    expected = os.environ.get("BP_WORK_ADMIN_TOKEN")
-    if not expected:
-        return
-    if not x_bp_admin_token or not secrets.compare_digest(x_bp_admin_token, expected):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid admin token")
+def auth_required() -> bool:
+    """Every work mutation needs a valid X-Work-Token (a server-issued worker id). This
+    is what lets the server URL be public: the token is the gate, not the URL. ON by
+    default; set BP_WORK_REQUIRE_TOKEN to a falsey value (0/false/no/off) to disable it
+    for a fully private/trusted deployment."""
+    return os.environ.get("BP_WORK_REQUIRE_TOKEN", "1").strip().lower() not in (
+        "0", "false", "no", "off", "",
+    )
 
 
 def create_app(store: WorkStore | None = None) -> FastAPI:
@@ -68,6 +72,42 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     def get_store() -> WorkStore:
         return app.state.store
 
+    def worker_identity(
+        x_work_token: str | None = Header(default=None),
+        store: WorkStore = Depends(get_store),
+    ) -> str | None:
+        """Resolve the caller to a username from their X-Work-Token. Returns None when
+        auth is disabled (callers then fall back to the body `agent`). When auth is on,
+        a missing/invalid/revoked token is rejected -- the username, never the token, is
+        what gets recorded as owner."""
+        if not auth_required():
+            return None
+        username = store.resolve_worker(x_work_token or "")
+        if not username:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "missing or invalid worker token (X-Work-Token)",
+            )
+        return username
+
+    def require_admin_worker(
+        x_work_token: str | None = Header(default=None),
+        store: WorkStore = Depends(get_store),
+    ) -> str:
+        """Gate /admin/* on a worker whose id carries the admin role. Replaces the old
+        shared admin secret: admin is now per-user, granted server-side. Bootstrap the
+        first admin with the `bp-work-server worker add --admin` CLI (direct DB)."""
+        token = x_work_token or ""
+        if not store.resolve_worker(token):
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "missing or invalid worker token (X-Work-Token)",
+            )
+        username = store.resolve_admin(token)
+        if not username:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "admin privileges required")
+        return username
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
         return static_dir.joinpath("index.html").read_text(encoding="utf-8")
@@ -76,11 +116,37 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"ok": "true", "version": __version__}
 
+    @app.post("/admin/workers", response_model=WorkerResponse, status_code=status.HTTP_201_CREATED)
+    def create_worker(
+        req: WorkerCreateRequest,
+        _admin: str = Depends(require_admin_worker),
+        store: WorkStore = Depends(get_store),
+    ) -> WorkerResponse:
+        result = store.create_worker(req.username, is_admin=req.is_admin)
+        return WorkerResponse(**result)
+
+    @app.get("/admin/workers", response_model=WorkerListResponse)
+    def list_workers(
+        _admin: str = Depends(require_admin_worker),
+        store: WorkStore = Depends(get_store),
+    ) -> WorkerListResponse:
+        return WorkerListResponse(workers=store.list_workers())
+
+    @app.delete("/admin/workers/{token}", status_code=status.HTTP_204_NO_CONTENT)
+    def revoke_worker(
+        token: str,
+        _admin: str = Depends(require_admin_worker),
+        store: WorkStore = Depends(get_store),
+    ) -> Response:
+        if not store.revoke_worker(token):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown worker token")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @app.post("/admin/import", response_model=ImportResponse)
     def import_workflow(
         workflow_root: str = Query(..., description="Path to BP-Decomp_Workflow"),
         reset: bool = Query(False),
-        _admin: None = Depends(require_admin_token),
+        _admin: str = Depends(require_admin_worker),
         store: WorkStore = Depends(get_store),
     ) -> dict[str, int]:
         try:
@@ -91,7 +157,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     @app.post("/admin/sync", response_model=SyncResponse)
     def sync_workflow(
         req: SyncRequest,
-        _admin: None = Depends(require_admin_token),
+        _admin: str = Depends(require_admin_worker),
         store: WorkStore = Depends(get_store),
     ) -> dict:
         try:
@@ -119,9 +185,14 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         return NextResponse(active_goal=active_goal, count=len(items), items=items)
 
     @app.post("/claims", response_model=ClaimResponse, status_code=status.HTTP_201_CREATED)
-    def claim(req: ClaimRequest, response: Response, store: WorkStore = Depends(get_store)):
+    def claim(
+        req: ClaimRequest,
+        response: Response,
+        store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
+    ):
         try:
-            result = store.claim(req.tu, req.agent, req.lease_seconds, force=req.force)
+            result = store.claim(req.tu, identity or req.agent, req.lease_seconds, force=req.force)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         if not result.claimed:
@@ -129,9 +200,13 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         return result
 
     @app.post("/claims/next", response_model=ClaimNextResponse)
-    def claim_next(req: ClaimNextRequest, store: WorkStore = Depends(get_store)) -> ClaimNextResponse:
+    def claim_next(
+        req: ClaimNextRequest,
+        store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
+    ) -> ClaimNextResponse:
         active_goal, claimed = store.claim_next(
-            req.agent, n=req.n, lease_seconds=req.lease_seconds, goal=req.goal
+            identity or req.agent, n=req.n, lease_seconds=req.lease_seconds, goal=req.goal
         )
         return ClaimNextResponse(active_goal=active_goal, count=len(claimed), claimed=claimed)
 
@@ -141,9 +216,10 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         req: HeartbeatRequest,
         response: Response,
         store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
     ):
         try:
-            result = store.heartbeat(tu_id, req.agent, req.lease_seconds)
+            result = store.heartbeat(tu_id, identity or req.agent, req.lease_seconds)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         if not result.claimed:
@@ -151,9 +227,14 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         return result
 
     @app.delete("/claims/{tu_id:path}", status_code=status.HTTP_204_NO_CONTENT)
-    def release(tu_id: str, req: AgentRequest, store: WorkStore = Depends(get_store)) -> Response:
+    def release(
+        tu_id: str,
+        req: AgentRequest,
+        store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
+    ) -> Response:
         try:
-            store.release(tu_id, req.agent)
+            store.release(tu_id, identity or req.agent)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         except PermissionError as exc:
@@ -165,9 +246,10 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         tu_id: str,
         req: StatusUpdateRequest,
         store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
     ) -> Response:
         try:
-            store.mark_compiled(tu_id, req.agent, notes=req.notes, commit=req.commit)
+            store.mark_compiled(tu_id, identity or req.agent, notes=req.notes, commit=req.commit)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         except (PermissionError, ValueError) as exc:
@@ -175,9 +257,14 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post("/tu/{tu_id:path}/review", status_code=status.HTTP_204_NO_CONTENT)
-    def review(tu_id: str, req: ReviewRequest, store: WorkStore = Depends(get_store)) -> Response:
+    def review(
+        tu_id: str,
+        req: ReviewRequest,
+        store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
+    ) -> Response:
         try:
-            store.review(tu_id, req.agent, req.verdict, notes=req.notes, commit=req.commit)
+            store.review(tu_id, identity or req.agent, req.verdict, notes=req.notes, commit=req.commit)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         except ValueError as exc:
@@ -185,17 +272,27 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post("/tu/{tu_id:path}/block", status_code=status.HTTP_204_NO_CONTENT)
-    def block(tu_id: str, req: BlockRequest, store: WorkStore = Depends(get_store)) -> Response:
+    def block(
+        tu_id: str,
+        req: BlockRequest,
+        store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
+    ) -> Response:
         try:
-            store.block(tu_id, req.agent, req.reason)
+            store.block(tu_id, identity or req.agent, req.reason)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post("/tu/{tu_id:path}/unblock", status_code=status.HTTP_204_NO_CONTENT)
-    def unblock(tu_id: str, req: AgentRequest, store: WorkStore = Depends(get_store)) -> Response:
+    def unblock(
+        tu_id: str,
+        req: AgentRequest,
+        store: WorkStore = Depends(get_store),
+        identity: str | None = Depends(worker_identity),
+    ) -> Response:
         try:
-            store.unblock(tu_id, req.agent)
+            store.unblock(tu_id, identity or req.agent)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)

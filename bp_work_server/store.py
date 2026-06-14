@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import secrets
 import sqlite3
 from collections import defaultdict
 from contextlib import contextmanager
@@ -74,6 +75,15 @@ CREATE TABLE IF NOT EXISTS event(
   detail_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS worker(
+  token TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  last_seen TEXT
+);
+
 CREATE INDEX IF NOT EXISTS ix_tu_status ON tu(status);
 CREATE INDEX IF NOT EXISTS ix_tu_owner ON tu(owner);
 CREATE INDEX IF NOT EXISTS ix_func_tu ON func(tu_id);
@@ -119,6 +129,10 @@ class WorkStore:
     def migrate(self) -> None:
         with self.connect() as con:
             con.executescript(SCHEMA)
+            # additive migration for DBs created before the admin role existed
+            cols = {r["name"] for r in con.execute("PRAGMA table_info(worker)")}
+            if "is_admin" not in cols:
+                con.execute("ALTER TABLE worker ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
 
     def import_workflow(self, workflow_root: str | Path, reset: bool = False) -> dict[str, int]:
         progress = Path(workflow_root) / "progress"
@@ -392,6 +406,67 @@ class WorkStore:
                 (iso(), tu_id),
             )
             self._log(con, agent, "unblock", tu_id, {})
+
+    # --- workers (server-issued identities) -------------------------------
+    def create_worker(self, username: str, is_admin: bool = False) -> dict[str, Any]:
+        """Mint a new secret token bound to a human username. `is_admin` grants access to
+        the /admin/* endpoints (minting/revoking ids, import/sync/reset). Admin is a role
+        on a worker, not a separate shared secret."""
+        token = secrets.token_urlsafe(24)
+        with self.connect() as con:
+            con.execute(
+                "INSERT INTO worker(token, username, active, is_admin, created_at) "
+                "VALUES(?, ?, 1, ?, ?)",
+                (token, username, 1 if is_admin else 0, iso()),
+            )
+            self._log(con, username, "worker_create", None, {"is_admin": bool(is_admin)})
+        return {"token": token, "username": username, "is_admin": bool(is_admin)}
+
+    def resolve_worker(self, token: str) -> str | None:
+        """Return the username for an active token, or None. Updates last_seen.
+        The token itself is never stored in events or on TU rows -- only the username."""
+        if not token:
+            return None
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT username FROM worker WHERE token=? AND active=1", (token,)
+            ).fetchone()
+            if not row:
+                return None
+            con.execute("UPDATE worker SET last_seen=? WHERE token=?", (iso(), token))
+            return row["username"]
+
+    def resolve_admin(self, token: str) -> str | None:
+        """Return the username for an active *admin* token, or None."""
+        if not token:
+            return None
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT username FROM worker WHERE token=? AND active=1 AND is_admin=1",
+                (token,),
+            ).fetchone()
+            return row["username"] if row else None
+
+    def list_workers(self) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            return [
+                {
+                    "token": r["token"],
+                    "username": r["username"],
+                    "active": bool(r["active"]),
+                    "is_admin": bool(r["is_admin"]),
+                    "created_at": r["created_at"],
+                    "last_seen": r["last_seen"],
+                }
+                for r in con.execute("SELECT * FROM worker ORDER BY created_at, username")
+            ]
+
+    def revoke_worker(self, token: str) -> bool:
+        with self.connect() as con:
+            cur = con.execute("UPDATE worker SET active=0 WHERE token=?", (token,))
+            if cur.rowcount:
+                self._log(con, None, "worker_revoke", None, {})
+            return cur.rowcount > 0
 
     def snapshot(self, include_tus: bool = True) -> tuple[str | None, StatusCounts, list[TuRecord]]:
         with self.connect() as con:

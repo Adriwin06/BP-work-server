@@ -135,6 +135,30 @@ class SyncResponse(ImportResponse):
     commit: str
 
 
+class WorkerCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=160)
+    is_admin: bool = False
+
+
+class WorkerResponse(BaseModel):
+    token: str
+    username: str
+    is_admin: bool = False
+
+
+class WorkerInfo(BaseModel):
+    token: str
+    username: str
+    active: bool
+    is_admin: bool = False
+    created_at: datetime | None = None
+    last_seen: datetime | None = None
+
+
+class WorkerListResponse(BaseModel):
+    workers: list[WorkerInfo]
+
+
 class ErrorResponse(BaseModel):
     error: str
     detail: str | None = None

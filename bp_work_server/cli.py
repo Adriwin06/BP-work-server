@@ -27,6 +27,17 @@ def main() -> None:
     serve_p.add_argument("--port", type=int, default=8765)
     serve_p.add_argument("--reload", action="store_true")
 
+    worker_p = sub.add_parser(
+        "worker", help="Manage worker ids directly on the DB (bootstrap admins, no HTTP)."
+    )
+    worker_sub = worker_p.add_subparsers(dest="worker_cmd", required=True)
+    w_add = worker_sub.add_parser("add", help="Mint a worker id for a username.")
+    w_add.add_argument("username")
+    w_add.add_argument("--admin", action="store_true", help="Grant the admin role.")
+    worker_sub.add_parser("list", help="List worker ids.")
+    w_rev = worker_sub.add_parser("revoke", help="Revoke a worker id.")
+    w_rev.add_argument("token")
+
     args = parser.parse_args()
     store = WorkStore(Path(args.db))
 
@@ -43,6 +54,30 @@ def main() -> None:
             f"{result['goals']} goals ({result['status_rows']} status rows)"
         )
         return
+
+    if args.cmd == "worker":
+        store.migrate()
+        if args.worker_cmd == "add":
+            result = store.create_worker(args.username, is_admin=args.admin)
+            role = "admin" if result["is_admin"] else "user"
+            print(f"created {role} worker for {result['username']!r}")
+            print(f"  WORK_AGENT={result['token']}")
+            print("\nGive this id to the user privately; they set it as WORK_AGENT.")
+            return
+        if args.worker_cmd == "list":
+            workers = store.list_workers()
+            if not workers:
+                print("no workers registered")
+                return
+            for w in workers:
+                state = "active " if w["active"] else "revoked"
+                role = "admin" if w["is_admin"] else "user "
+                print(f"  [{state}|{role}] {w['username']:24s} {w['token']}  "
+                      f"last_seen={w['last_seen']}")
+            return
+        if args.worker_cmd == "revoke":
+            print("revoked" if store.revoke_worker(args.token) else "unknown token")
+            return
 
     if args.cmd == "serve":
         import uvicorn
