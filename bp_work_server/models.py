@@ -48,6 +48,18 @@ class NextResponse(BaseModel):
     items: list[NextTu]
 
 
+class ClaimNextRequest(AgentRequest):
+    n: int = Field(default=1, ge=1, le=100)
+    lease_seconds: int = Field(default=7200, ge=60, le=86_400)
+    goal: str | None = None
+
+
+class ClaimNextResponse(BaseModel):
+    active_goal: str | None
+    count: int
+    claimed: list[ClaimResponse]
+
+
 class StatusUpdateRequest(AgentRequest):
     notes: str | None = None
     commit: str | None = None

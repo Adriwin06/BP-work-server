@@ -42,6 +42,18 @@ class WorkServerClient:
             {"tu": tu, "agent": agent, "lease_seconds": lease_seconds, "force": force},
         )
 
+    def claim_next(
+        self,
+        agent: str,
+        n: int = 1,
+        lease_seconds: int = 7200,
+        goal: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"agent": agent, "n": n, "lease_seconds": lease_seconds}
+        if goal:
+            body["goal"] = goal
+        return self._request("POST", "/claims/next", body)
+
     def heartbeat(self, tu: str, agent: str, lease_seconds: int = 7200) -> dict[str, Any]:
         return self._request(
             "POST",

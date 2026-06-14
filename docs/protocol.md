@@ -69,6 +69,39 @@ Responses:
 - `409`: TU is already claimed, compiled, done, or blocked.
 - `404`: unknown TU.
 
+### `POST /claims/next`
+
+Atomically ranks the `todo` queue and claims the top `n` TUs for one agent in a
+single transaction. This is the "checkout" path: concurrent agents calling it get
+**distinct** work, with no rank-then-claim race window. Leases auto-expire, so
+over-claiming self-heals (claim 5, finish 1, the rest return to `todo`).
+
+Request:
+
+```json
+{
+  "agent": "adrian-codex-1",
+  "n": 5,
+  "lease_seconds": 7200,
+  "goal": "boot-trace"
+}
+```
+
+`goal` is optional; when omitted the imported active goal is used (same ranking as
+`GET /next`). Response returns the claims that succeeded — possibly fewer than `n`
+if the queue is short:
+
+```json
+{
+  "active_goal": "boot-trace",
+  "count": 5,
+  "claimed": [
+    {"claimed": true, "tu": "GameSource/Foo/Bar.cpp", "status": "in_progress",
+     "owner": "adrian-codex-1", "lease_expires_at": "2026-06-14T12:00:00+00:00"}
+  ]
+}
+```
+
 ### `POST /claims/{tu}/heartbeat`
 
 Renews the current owner's lease.
@@ -164,26 +197,50 @@ TUs without requiring the browser to pull the full TU table.
 
 ## `work.py` Integration
 
-The existing local workflow stays intact. Server behavior is active only when
-`WORK_SERVER` is set:
+The server is **optional and invite-only**: the local workflow runs fully standalone and
+is only coordinated when `WORK_SERVER` is set. Config lives in a repo-root `.env` (copy
+`.env.example`), which `work` auto-loads — not shell exports. Only people given the URL
+turn it on:
 
-```powershell
-$env:WORK_SERVER = "http://your-server:8765"
-$env:WORK_AGENT = "adrian-codex-1"
-work next
-work start "GameSource/Foo/Bar.cpp"
+```
+# .env (git-ignored; copy from .env.example). Leave WORK_SERVER unset to work locally.
+WORK_SERVER=http://your-server:8765   # only if you were given a URL
+WORK_AGENT=adrian-codex-1
+```
+
+```
+work claim -n 1                 # checkout the next ready TU (atomic when a server is set)
+work start "GameSource/Foo/Bar.cpp"   # or claim one specific TU by id
 ```
 
 Mapping:
 
 | Local command | Server call |
 | --- | --- |
-| `work next` | `GET /next` |
+| `work next` | `GET /next` (preview only — reserves nothing) |
+| `work claim [-n N]` | `POST /claims/next` (atomic checkout of the next N) |
 | `work start <tu>` | `POST /claims` |
 | `work submit <tu>` pass | local compile, then `POST /tu/{tu}/compiled` |
 | `work review <tu> --verdict pass` | `POST /tu/{tu}/review` |
 | `work block <tu>` | `POST /tu/{tu}/block` |
 | `work unblock <tu>` | `POST /tu/{tu}/unblock` |
+| `work server-reset [--to REF]` | `POST /admin/sync` with `reset=true` |
 
 The local `ledger.sqlite` can remain a cache for dossiers, dependencies, and
 offline work. The server exists to prevent duplicate claims.
+
+## Two-store model and reverting
+
+The server is **derived from** the workflow repo, not parallel to it. `progress/status.json`
+is the durable record (the `done`/`blocked` states tied to committed code) and the seed
+for both `/admin/sync` and a fresh `work bootstrap`. Live claims, leases, `owner`, the
+transient `in_progress`/`compiled` states, and the event log are born on the server.
+
+When `WORK_SERVER` is set, the workflow CLI writes only durable statuses into
+`status.json` (no `owner`, no `in_progress`) so concurrent agents don't collide on git.
+
+To revert everything to a known-good commit, run `work server-reset --to <ref>`: it
+`git reset`s the workflow repo + `b5-decomp`, drops the local `ledger.sqlite` cache, and
+re-seeds the server via `POST /admin/sync` with `reset=true`. The reset discards live
+claims and the event log (claims are ephemeral; event history is not recoverable), so it
+is the deliberate clean-slate path.

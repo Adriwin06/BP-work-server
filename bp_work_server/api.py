@@ -17,6 +17,8 @@ from bp_work_server.github import GitHubClient
 from bp_work_server.models import (
     AgentRequest,
     BlockRequest,
+    ClaimNextRequest,
+    ClaimNextResponse,
     ClaimRequest,
     ClaimResponse,
     EventsResponse,
@@ -125,6 +127,13 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         if not result.claimed:
             response.status_code = status.HTTP_409_CONFLICT
         return result
+
+    @app.post("/claims/next", response_model=ClaimNextResponse)
+    def claim_next(req: ClaimNextRequest, store: WorkStore = Depends(get_store)) -> ClaimNextResponse:
+        active_goal, claimed = store.claim_next(
+            req.agent, n=req.n, lease_seconds=req.lease_seconds, goal=req.goal
+        )
+        return ClaimNextResponse(active_goal=active_goal, count=len(claimed), claimed=claimed)
 
     @app.post("/claims/{tu_id:path}/heartbeat", response_model=ClaimResponse)
     def heartbeat(

@@ -256,6 +256,48 @@ class WorkStore:
                 lease_expires_at=expiry,
             )
 
+    def claim_next(
+        self, agent: str, n: int = 1, lease_seconds: int = 7200, goal: str | None = None
+    ) -> tuple[str | None, list[ClaimResponse]]:
+        """Rank the ``todo`` queue and claim the top ``n`` for ``agent`` in one
+        transaction, so concurrent agents get distinct work (no rank-then-race
+        window). Returns the active goal and the claims that succeeded -- fewer
+        than ``n`` if the queue is short or a row was taken between rank and claim.
+        """
+        now = utcnow()
+        expiry = now + timedelta(seconds=lease_seconds)
+        with self.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            self._expire_leases(con, now)
+            active_goal, ranked = self._next_tus_from_connection(con, n=n, goal=goal)
+            claimed: list[ClaimResponse] = []
+            for item in ranked:
+                cur = con.execute(
+                    """
+                    UPDATE tu
+                    SET status='in_progress', owner=?, claimed_at=?,
+                        lease_expires_at=?, updated_at=?, notes=NULL
+                    WHERE id=? AND status='todo'
+                    """,
+                    (agent, iso(now), iso(expiry), iso(now), item.id),
+                )
+                if cur.rowcount == 0:
+                    continue
+                self._log(
+                    con, agent, "claim", item.id,
+                    {"lease_seconds": lease_seconds, "via": "claim_next"},
+                )
+                claimed.append(
+                    ClaimResponse(
+                        claimed=True,
+                        tu=item.id,
+                        status="in_progress",
+                        owner=agent,
+                        lease_expires_at=expiry,
+                    )
+                )
+            return active_goal, claimed
+
     def heartbeat(self, tu_id: str, agent: str, lease_seconds: int = 7200) -> ClaimResponse:
         return self.claim(tu_id, agent, lease_seconds=lease_seconds)
 
