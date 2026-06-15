@@ -14,6 +14,11 @@ from bp_work_server.models import ClaimResponse, NextTu, StatusCounts, TuRecord
 
 
 TU_STATUSES = {"todo", "in_progress", "compiled", "done", "blocked"}
+# Only these durable statuses are seeded from the workflow snapshot. The transient
+# work states (in_progress/compiled), owners, and leases are born on the server and
+# must never be clobbered or resurrected by a re-import/sync -- see docs/protocol.md
+# "Two-store model". This is what keeps stale snapshot claims out of Active Work.
+DURABLE_IMPORT_STATUSES = {"done", "blocked"}
 DB_BUSY_TIMEOUT_MS = 30_000
 
 
@@ -651,7 +656,7 @@ class WorkStore:
                     """
                 )
             ]
-            recent_events = self._events_from_connection(con, after=0, limit=25)
+            recent_events = self._events_from_connection(con, after=0, limit=50)
             next_goal, next_items = self._next_tus_from_connection(con, n=20)
             goal_rows = [
                 {
@@ -971,15 +976,22 @@ class WorkStore:
         rows = 0
         for tu_id, data in status.get("tu", {}).items():
             tu_status = data.get("status", "todo")
-            if tu_status not in TU_STATUSES:
+            # Skip todo and the transient in_progress/compiled states: they are owned by
+            # the live server, not the snapshot. Importing them is what was filling Active
+            # Work with stale, lease-less "claims" carried over from status.json.
+            if tu_status not in DURABLE_IMPORT_STATUSES:
                 continue
+            # Durable status wins, but the owner/lease from the snapshot is dropped: a
+            # done/blocked TU holds no live claim. The `status != ?` guard keeps re-syncs
+            # from needlessly bumping updated_at on rows that already match.
             cur = con.execute(
                 """
                 UPDATE tu
-                SET status=?, owner=?, notes=?, updated_at=?
-                WHERE id=?
+                SET status=?, owner=NULL, notes=?, claimed_at=NULL, lease_expires_at=NULL,
+                    updated_at=?
+                WHERE id=? AND status != ?
                 """,
-                (tu_status, data.get("owner"), data.get("notes"), iso(), tu_id),
+                (tu_status, data.get("notes"), iso(), tu_id, tu_status),
             )
             rows += cur.rowcount
         for name, data in status.get("func", {}).items():

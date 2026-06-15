@@ -423,7 +423,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
                     payload = json.dumps(event, default=str)
                     yield f"id: {event['id']}\nevent: work-event\ndata: {payload}\n\n"
                 yield ": keepalive\n\n"
-                await asyncio.sleep(10)
+                await asyncio.sleep(2)
 
         return StreamingResponse(
             stream(),

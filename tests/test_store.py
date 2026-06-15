@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 import pytest
@@ -76,6 +77,76 @@ def test_review_pass_unblocks_dependents(tmp_path):
     assert rows[0].id == "GameSource/A.cpp"
     assert rows[0].unresolved_deps == 0
     assert rows[1].id == "class:Utility"
+
+
+def _write_workflow(tmp_path, status):
+    progress = tmp_path / "progress"
+    progress.mkdir()
+    (progress / "tu_index.json").write_text(
+        json.dumps(
+            {
+                "GameSource/A.cpp": {"source": "decfigs", "n_funcs": 1, "functions": ["A::Run"]},
+                "GameSource/B.cpp": {"source": "decfigs", "n_funcs": 1, "functions": ["B::Run"]},
+                "GameSource/C.cpp": {"source": "decfigs", "n_funcs": 1, "functions": ["C::Run"]},
+                "GameSource/D.cpp": {"source": "decfigs", "n_funcs": 1, "functions": ["D::Run"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (progress / "status.json").write_text(json.dumps(status), encoding="utf-8")
+    return tmp_path
+
+
+def test_import_seeds_only_durable_statuses(tmp_path):
+    """Snapshot import must apply only durable done/blocked states. Transient
+    in_progress/compiled (and any owner) are server-born and would otherwise show up
+    as stale, lease-less rows in Active Work -- the bug this guards against."""
+    store = WorkStore(tmp_path / "work.sqlite3")
+    store.migrate()
+    workflow = _write_workflow(
+        tmp_path,
+        {
+            "tu": {
+                "GameSource/A.cpp": {"status": "done", "owner": "agent"},
+                "GameSource/B.cpp": {"status": "blocked", "notes": "vendor code"},
+                "GameSource/C.cpp": {"status": "in_progress", "owner": "agent"},
+                "GameSource/D.cpp": {"status": "compiled", "owner": "agent"},
+            }
+        },
+    )
+
+    store.import_workflow(workflow, reset=True)
+
+    _goal, counts, tus = store.snapshot()
+    by_id = {tu.id: tu for tu in tus}
+    # done/blocked applied, owner dropped; in_progress/compiled ignored -> stay todo.
+    assert counts.done == 1
+    assert counts.blocked == 1
+    assert counts.in_progress == 0
+    assert counts.compiled == 0
+    assert counts.todo == 2
+    assert by_id["GameSource/A.cpp"].owner is None
+    assert by_id["GameSource/B.cpp"].notes == "vendor code"
+
+    # Active Work on the dashboard is empty until a live claim is made on the server.
+    assert store.dashboard_state()["active_work"] == []
+
+
+def test_live_claim_survives_resync(tmp_path):
+    """A re-sync (no reset) must not stomp a live server claim back to a snapshot state."""
+    store = WorkStore(tmp_path / "work.sqlite3")
+    store.migrate()
+    workflow = _write_workflow(tmp_path, {"tu": {}})
+    store.import_workflow(workflow, reset=True)
+
+    store.claim("GameSource/C.cpp", "live-agent")
+    # Workflow snapshot still thinks C is todo; a sync must leave the live claim intact.
+    store.import_workflow(workflow, reset=False)
+
+    _goal, _counts, tus = store.snapshot()
+    by_id = {tu.id: tu for tu in tus}
+    assert by_id["GameSource/C.cpp"].status == "in_progress"
+    assert by_id["GameSource/C.cpp"].owner == "live-agent"
 
 
 def test_expired_claim_returns_to_todo(tmp_path):

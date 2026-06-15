@@ -42,7 +42,7 @@ def test_dashboard_page_and_state(tmp_path):
     state = client.get("/dashboard/state")
 
     assert page.status_code == 200
-    assert "BP Decomp Progress" in page.text
+    assert "Burnout Paradise Decompilation" in page.text
     assert state.status_code == 200
     body = state.json()
     assert body["totals"]["tus"] == 2
