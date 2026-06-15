@@ -386,15 +386,17 @@ h2::before {
 }
 
 .badge {
-  padding: 4px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  color: var(--gold);
+  padding: 4px 13px;
+  /* gold paint strip lifted straight from the menu HUD tags */
+  background: url("/static/img/ui/strip-gold.png") center / 100% 100% no-repeat, #d89b1f;
+  border: none;
+  color: #1c1206;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   font-family: var(--font-head);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
   clip-path: polygon(7px 0, 100% 0, calc(100% - 7px) 100%, 0 100%);
 }
 
@@ -752,7 +754,9 @@ small {
 }
 
 .tree-node:hover {
-  background: var(--surface-hover);
+  color: #fff;
+  background: url("/static/img/ui/banner-red.png") no-repeat left center / 280px 160%,
+    linear-gradient(90deg, rgba(207, 23, 34, 0.45), transparent 80%);
 }
 
 .tree-node .twist {
@@ -821,12 +825,62 @@ small {
   border-bottom: 0;
 }
 
-/* selected-row highlight: crimson brush sweep like the BP menu cursor */
+/* ---- BP menu cursor: crimson brush sweep + chevron pointer on selection ---- */
+.agent-row,
+.queue-row,
+.blocked-row,
+.goal-row {
+  padding-left: 26px;
+  transition: color 0.12s;
+}
+
+.agent-row::before,
+.queue-row::before,
+.blocked-row::before,
+.goal-row::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 18px;
+  width: 11px;
+  height: 13px;
+  background: url("/static/img/ui/chevron-red.png") no-repeat center / contain;
+  transform: scaleX(-1) translateX(10px);
+  opacity: 0;
+  filter: brightness(1.7) drop-shadow(0 0 3px rgba(236, 28, 36, 0.8));
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
 .agent-row:hover,
-.queue-row:hover {
-  background:
-    linear-gradient(90deg, rgba(207, 23, 34, 0.3), rgba(207, 23, 34, 0.04) 80%);
+.queue-row:hover,
+.blocked-row:hover,
+.goal-row:hover,
+tbody tr:hover,
+.tree-node:hover,
+.dep-row.clickable:hover {
+  color: #fff;
+  background-image: url("/static/img/ui/banner-red.png"),
+    linear-gradient(90deg, rgba(207, 23, 34, 0.78) 0%, rgba(207, 23, 34, 0.4) 55%, rgba(207, 23, 34, 0.05) 92%);
+  background-repeat: no-repeat, no-repeat;
+  background-position: left center, left center;
+  background-size: 70% 165%, 100% 100%;
   box-shadow: inset 3px 0 0 var(--red-bright);
+}
+
+.agent-row:hover::before,
+.queue-row:hover::before,
+.blocked-row:hover::before,
+.goal-row:hover::before {
+  opacity: 1;
+  transform: scaleX(-1) translateX(0);
+}
+
+.agent-row:hover .agent-meta,
+.queue-row:hover .tu-meta,
+.blocked-row:hover .tu-meta,
+.goal-row:hover .goal-meta,
+tbody tr:hover td {
+  color: rgba(255, 255, 255, 0.82);
 }
 
 .agent-name,
@@ -905,9 +959,7 @@ td {
   font-size: 13px;
 }
 
-tbody tr:hover {
-  background: var(--surface-hover);
-}
+/* tbody tr:hover styled with the menu-cursor brush in the work-grid section */
 
 th {
   position: sticky;
@@ -1074,9 +1126,13 @@ td:nth-child(4) {
 }
 
 .explorer-tabs .tab {
-  padding: 8px 20px;
+  padding: 9px 22px;
   border: 1px solid var(--line);
-  background: var(--surface-2);
+  background-color: #15110f;
+  background-image: url("/static/img/ui/brush-black.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 150% 170%;
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
@@ -1126,23 +1182,40 @@ td:nth-child(4) {
 }
 
 .filter {
-  padding: 9px 12px;
+  padding: 9px 14px;
   border: 1px solid var(--line);
-  background: var(--surface-2);
+  /* painted-on grunge so controls read like brushed menu buttons */
+  background-color: #15110f;
+  background-image: url("/static/img/ui/brush-black.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 150% 160%;
   color: var(--text);
   font-size: 12.5px;
-  font-family: inherit;
+  font-family: var(--font-head);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+  clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
 }
 
 .filter:hover {
-  border-color: var(--red);
+  border-color: transparent;
+  color: #fff;
+  background-image: url("/static/img/ui/banner-red.png");
+  background-size: 120% 130%;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
 
 .order-btn {
-  width: 40px;
+  width: 42px;
   font-weight: 700;
   color: var(--gold);
+}
+
+.order-btn:hover {
+  color: #fff;
 }
 
 .pager {
@@ -1256,17 +1329,18 @@ td:nth-child(4) {
   flex: none;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--line);
-  background: var(--surface-2);
-  color: var(--muted);
+  border: none;
+  /* in-game circular button prompt */
+  background: url("/static/img/ui/icon-close.png") no-repeat center / 26px;
+  color: transparent;
+  font-size: 0;
   cursor: pointer;
-  font-size: 14px;
-  clip-path: polygon(7px 0, 100% 0, calc(100% - 7px) 100%, 0 100%);
+  transition: filter 0.12s, transform 0.12s;
 }
 
 .drawer-close:hover {
-  color: var(--text);
-  border-color: var(--red);
+  filter: brightness(1.25) drop-shadow(0 0 5px rgba(236, 28, 36, 0.7));
+  transform: scale(1.08);
 }
 
 .drawer-body {
@@ -1364,6 +1438,42 @@ td:nth-child(4) {
 
 .file-link {
   cursor: pointer;
+}
+
+/* ---------- In-game decals ---------- */
+/* Blocked panel gets the yellow hazard-diamond instead of the chevron marker */
+.blocked .panel-head h2::before {
+  width: 17px;
+  height: 17px;
+  background-image: url("/static/img/ui/sign-diamond.png");
+  transform: none;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+/* hand-drawn red scribble curling around the hero "Active Goal" card */
+.goal-card::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  top: 6px;
+  width: 118px;
+  height: 74px;
+  background: url("/static/img/ui/scribble-loop.png") no-repeat right top / contain;
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+/* faint blood splatter behind the Explorer header */
+.explorer .panel-head::before {
+  content: "";
+  position: absolute;
+  right: 6px;
+  top: -16px;
+  width: 150px;
+  height: 110px;
+  background: url("/static/img/ui/splatter-red.png") no-repeat right center / contain;
+  opacity: 0.22;
+  pointer-events: none;
 }
 
 @media (max-width: 700px) {
