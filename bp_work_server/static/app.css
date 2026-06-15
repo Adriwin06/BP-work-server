@@ -793,6 +793,9 @@ small {
   grid-template-columns: minmax(300px, 0.8fr) minmax(520px, 1.7fr);
   gap: 20px;
   min-width: 0;
+  /* size each card to its own content instead of stretching to match the
+     tallest card in the row */
+  align-items: start;
 }
 
 .panel {
