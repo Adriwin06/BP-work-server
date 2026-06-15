@@ -1241,6 +1241,90 @@ td:nth-child(4) {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
 
+/* Themed custom dropdown — replaces the native <select> option popup.
+   The native <select> is kept (hidden) as the source of truth. */
+.cs-wrap {
+  position: relative;
+  display: inline-flex;
+}
+/* mirror the native select's .tus-only/.hidden visibility toggle onto the wrap */
+.cs-wrap:has(> .cs-native.hidden) {
+  display: none;
+}
+.cs-native {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.cs-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.cs-trigger::after {
+  content: "";
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  transition: transform 0.12s;
+}
+.cs-wrap.open .cs-trigger::after {
+  transform: rotate(180deg);
+}
+
+.cs-menu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background-color: #15110f;
+  background-image: url("/static/img/ui/brush-black.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  max-height: 280px;
+  overflow-y: auto;
+  display: none;
+}
+.cs-wrap.open .cs-menu {
+  display: block;
+}
+.cs-option {
+  padding: 8px 14px;
+  color: var(--text);
+  font-family: var(--font-head);
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.1s, background-color 0.1s, background-image 0.1s;
+}
+.cs-option:hover {
+  color: #fff;
+  background-image: url("/static/img/ui/banner-red.png");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 120% 130%;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+.cs-option.selected {
+  color: var(--gold);
+}
+
 .order-btn {
   width: 42px;
   font-weight: 700;

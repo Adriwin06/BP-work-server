@@ -932,6 +932,82 @@ function connectStream() {
   state.refreshTimer = window.setInterval(refresh, 30000);
 }
 
+// Replace the browser-native <select> popups with themed dropdowns. The native
+// <select> stays in the DOM as the source of truth, so all the .value reads,
+// "change" handlers, and .tus-only/.hidden toggling elsewhere keep working.
+function enhanceSelect(sel) {
+  const wrap = document.createElement("div");
+  wrap.className = "cs-wrap";
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+  sel.classList.add("cs-native");
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "filter cs-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  wrap.appendChild(trigger);
+
+  const menu = document.createElement("ul");
+  menu.className = "cs-menu";
+  menu.setAttribute("role", "listbox");
+  wrap.appendChild(menu);
+
+  const close = () => wrap.classList.remove("open");
+
+  const syncLabel = () => {
+    const opt = sel.options[sel.selectedIndex];
+    trigger.textContent = opt ? opt.textContent : "";
+  };
+
+  const markSelected = () => {
+    [...menu.children].forEach((li, i) => li.classList.toggle("selected", i === sel.selectedIndex));
+  };
+
+  const buildMenu = () => {
+    menu.replaceChildren();
+    [...sel.options].forEach((opt, i) => {
+      const li = document.createElement("li");
+      li.className = "cs-option";
+      li.setAttribute("role", "option");
+      li.textContent = opt.textContent;
+      li.addEventListener("click", () => {
+        if (sel.selectedIndex !== i) {
+          sel.selectedIndex = i;
+          sel.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        syncLabel();
+        markSelected();
+        close();
+      });
+      menu.appendChild(li);
+    });
+    syncLabel();
+    markSelected();
+  };
+
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = !wrap.classList.contains("open");
+    for (const w of document.querySelectorAll(".cs-wrap.open")) w.classList.remove("open");
+    wrap.classList.toggle("open", willOpen);
+  });
+
+  // fillSelect() repopulates options dynamically; rebuild the menu to match.
+  new MutationObserver(buildMenu).observe(sel, { childList: true });
+  buildMenu();
+}
+
+for (const sel of document.querySelectorAll("select.filter")) enhanceSelect(sel);
+document.addEventListener("click", () => {
+  for (const w of document.querySelectorAll(".cs-wrap.open")) w.classList.remove("open");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    for (const w of document.querySelectorAll(".cs-wrap.open")) w.classList.remove("open");
+  }
+});
+
 refresh();
 connectStream();
 refreshGithub();
