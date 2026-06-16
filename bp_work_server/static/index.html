@@ -249,7 +249,25 @@
               <h2>Next Queue</h2>
               <span id="nextCount" class="badge">0 ready</span>
             </div>
+            <div class="mini-controls">
+              <input
+                type="search"
+                id="queueSearch"
+                class="search-input"
+                placeholder="Search by TU or path…"
+                autocomplete="off"
+              />
+              <select id="queueFilterSource" class="filter"><option value="">All sources</option></select>
+            </div>
             <div id="nextQueue" class="queue empty">No available TUs.</div>
+            <div class="mini-foot">
+              <span id="queueRange" class="muted-text">—</span>
+              <div class="mini-pager">
+                <button id="queuePrev" class="filter">Prev</button>
+                <span id="queuePageStatus" class="page-status">Page 1 of 1</span>
+                <button id="queueNext" class="filter">Next</button>
+              </div>
+            </div>
           </section>
 
           <section class="card panel events">
@@ -257,7 +275,26 @@
               <h2>Live Events</h2>
               <span id="eventCount" class="badge">0 events</span>
             </div>
+            <div class="mini-controls">
+              <input
+                type="search"
+                id="eventsSearch"
+                class="search-input"
+                placeholder="Search by actor, target, or detail…"
+                autocomplete="off"
+              />
+              <select id="eventsFilterAction" class="filter"><option value="">All events</option></select>
+              <select id="eventsFilterActor" class="filter"><option value="">All actors</option></select>
+            </div>
             <div id="events" class="event-table empty"></div>
+            <div class="mini-foot">
+              <span id="eventsRange" class="muted-text">—</span>
+              <div class="mini-pager">
+                <button id="eventsPrev" class="filter">Prev</button>
+                <span id="eventsPageStatus" class="page-status">Page 1 of 1</span>
+                <button id="eventsNext" class="filter">Next</button>
+              </div>
+            </div>
           </section>
 
           <section class="card panel goals">

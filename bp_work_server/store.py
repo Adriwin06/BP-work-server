@@ -842,8 +842,11 @@ class WorkStore:
                         "current_work": agent_work.get(name, [])[:5],
                     }
                 )
-            recent_events = self._events_from_connection(con, after=0, limit=50)
-            next_goal, next_items = self._next_tus_from_connection(con, n=20)
+            # Return the full event log and full ready queue; the dashboard UI
+            # filters, searches, and paginates these client-side. The payload is
+            # rebuilt only when the cache is invalidated (on writes), not per read.
+            recent_events = self._events_from_connection(con, after=0, limit=1_000_000)
+            next_goal, next_items = self._next_tus_from_connection(con, n=1_000_000)
             goal_rows = [
                 {
                     "name": row["name"],

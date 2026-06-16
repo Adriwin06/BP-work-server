@@ -827,6 +827,48 @@ small {
   display: grid;
 }
 
+/* Search + filter row and pager footer for the Live Events / Next Queue panels.
+   These sit outside the scrolling list so they stay pinned while it scrolls. */
+.mini-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+
+.mini-controls .search-input {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+
+.mini-controls .cs-wrap {
+  flex: 1 1 120px;
+  min-width: 110px;
+}
+
+.mini-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+
+.mini-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mini-pager .filter {
+  padding: 4px 10px;
+}
+
 .agent-row,
 .queue-row,
 .goal-row,

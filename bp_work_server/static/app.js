@@ -22,6 +22,10 @@ const state = {
     searchTimer: null,
     requestId: 0,
   },
+  // Client-side mini-explorers for the Live Events and Next Queue panels:
+  // the dashboard payload carries the full lists; we filter/search/page here.
+  eventsView: { all: [], q: "", action: "", actor: "", page: 1, perPage: 50, searchTimer: null },
+  queueView: { all: [], q: "", source: "", page: 1, perPage: 50, searchTimer: null },
 };
 
 /* Build a github.com/blob URL for a path inside the mirrored repo. */
@@ -51,6 +55,15 @@ function pct(value) {
 
 function fmtInt(value) {
   return Number(value || 0).toLocaleString();
+}
+
+// Compact count for badges: 950 -> "950", 1300 -> "1.3k", 2_000_000 -> "2M".
+function fmtCompact(value) {
+  const n = Number(value || 0);
+  if (n < 1000) return String(n);
+  return n
+    .toLocaleString("en", { notation: "compact", maximumFractionDigits: 1 })
+    .replace("K", "k");
 }
 
 function fmtTime(value) {
@@ -206,8 +219,8 @@ function render(data) {
 
   renderAgents(data.agents || []);
   renderActiveWork(data.active_work || []);
-  renderNextQueue((data.next && data.next.items) || []);
-  renderEvents(data.recent_events || []);
+  setQueueData((data.next && data.next.items) || []);
+  setEventsData(data.recent_events || []);
   renderGoals(data.goals || []);
   renderBlocked(data.blocked || []);
 }
@@ -290,61 +303,169 @@ function renderActiveWork(items) {
   }
 }
 
-function renderNextQueue(items) {
-  text("nextCount", `${items.length} ready`);
-  const root = el("nextQueue");
-  clearNode(root);
-  root.className = items.length ? "queue" : "queue empty";
-  if (!items.length) {
-    root.textContent = "No available TUs.";
-    return;
-  }
-  for (const item of items) {
-    const row = div("queue-row");
-    row.classList.add("clickable");
-    row.appendChild(tuButton(item.id));
-    row.appendChild(
-      div(
-        "tu-meta",
-        `${item.source || "unknown"} · ${fmtInt(item.n_funcs)} funcs · ${fmtInt(
-          item.unresolved_deps,
-        )} unresolved deps`,
-      ),
-    );
-    row.addEventListener("click", () => openDetail(item.id));
-    root.appendChild(row);
-  }
+/* ---------------- Next Queue (client-side filter / search / pager) ---------------- */
+
+function setQueueData(items) {
+  const view = state.queueView;
+  view.all = items || [];
+  fillSelect(
+    "queueFilterSource",
+    [...new Set(view.all.map((i) => i.source).filter(Boolean))].sort(),
+    "All sources",
+  );
+  renderQueue();
 }
 
-function renderEvents(events) {
-  text("eventCount", `${events.length} events`);
+function filteredQueue() {
+  const view = state.queueView;
+  const q = view.q.toLowerCase();
+  return view.all.filter((item) => {
+    if (view.source && item.source !== view.source) return false;
+    if (!q) return true;
+    return (
+      String(item.id || "").toLowerCase().includes(q) ||
+      String(item.dest_path || "").toLowerCase().includes(q) ||
+      String(item.source || "").toLowerCase().includes(q)
+    );
+  });
+}
+
+function renderQueue() {
+  const view = state.queueView;
+  text("nextCount", `${fmtCompact(view.all.length)} ready`);
+  const items = filteredQueue();
+  const { slice, from, to, page, totalPages } = paginate(items, view);
+  view.page = page;
+
+  const root = el("nextQueue");
+  clearNode(root);
+  root.className = slice.length ? "queue" : "queue empty";
+  if (!slice.length) {
+    root.textContent = view.all.length ? "No TUs match." : "No available TUs.";
+  } else {
+    for (const item of slice) {
+      const row = div("queue-row");
+      row.classList.add("clickable");
+      row.appendChild(tuButton(item.id));
+      row.appendChild(
+        div(
+          "tu-meta",
+          `${item.source || "unknown"} · ${fmtInt(item.n_funcs)} funcs · ${fmtInt(
+            item.unresolved_deps,
+          )} unresolved deps`,
+        ),
+      );
+      row.addEventListener("click", () => openDetail(item.id));
+      root.appendChild(row);
+    }
+  }
+  renderMiniFoot("queue", items.length, from, to, page, totalPages);
+}
+
+/* ---------------- Live Events (client-side filter / search / pager) ---------------- */
+
+// Legacy backfilled rows ("pre-server attribution") share one timestamp and would
+// otherwise crowd the top; they are sorted to the bottom of the list.
+function isLegacyEvent(event) {
+  const source = (event.detail && event.detail.source) || "";
+  return String(source).toLowerCase().includes("pre-server");
+}
+
+function setEventsData(events) {
+  const view = state.eventsView;
+  for (const event of events || []) {
+    state.lastEventId = Math.max(state.lastEventId, event.id || 0);
+  }
+  // Real events newest-first; legacy pre-server attribution always last.
+  view.all = [...(events || [])].sort(
+    (a, b) => isLegacyEvent(a) - isLegacyEvent(b) || (b.id || 0) - (a.id || 0),
+  );
+  fillSelect(
+    "eventsFilterAction",
+    [...new Set(view.all.map((e) => e.action).filter(Boolean))].sort(),
+    "All events",
+  );
+  fillSelect(
+    "eventsFilterActor",
+    [...new Set(view.all.map((e) => e.agent).filter(Boolean))].sort(),
+    "All actors",
+  );
+  renderEvents();
+}
+
+function filteredEvents() {
+  const view = state.eventsView;
+  const q = view.q.toLowerCase();
+  return view.all.filter((event) => {
+    if (view.action && event.action !== view.action) return false;
+    if (view.actor && event.agent !== view.actor) return false;
+    if (!q) return true;
+    return (
+      String(event.agent || "").toLowerCase().includes(q) ||
+      String(event.tu_id || "").toLowerCase().includes(q) ||
+      String(event.action || "").toLowerCase().includes(q) ||
+      detailText(event.detail).toLowerCase().includes(q)
+    );
+  });
+}
+
+function renderEvents() {
+  const view = state.eventsView;
+  text("eventCount", `${fmtCompact(view.all.length)} events`);
+  const events = filteredEvents();
+  const { slice, from, to, page, totalPages } = paginate(events, view);
+  view.page = page;
+
   const root = el("events");
   clearNode(root);
-  root.className = events.length ? "event-table" : "event-table empty";
-  if (!events.length) {
-    root.textContent = "No events yet.";
-    return;
+  root.className = slice.length ? "event-table" : "event-table empty";
+  if (!slice.length) {
+    root.textContent = view.all.length ? "No events match." : "No events yet.";
+  } else {
+    const head = div("event-row event-head");
+    ["Time", "Event", "Actor", "Target", "Details"].forEach((label) =>
+      head.appendChild(div("event-cell", label)),
+    );
+    root.appendChild(head);
+    for (const event of slice) {
+      const row = div("event-row");
+      row.appendChild(div("event-cell event-time", shortTime(event.ts)));
+      row.appendChild(div("event-cell event-action", event.action || "event"));
+      const actor = div("event-cell");
+      actor.appendChild(event.agent ? actorNode(event.agent) : span("muted-text", "server"));
+      row.appendChild(actor);
+      const target = div("event-cell event-target");
+      if (event.tu_id) target.appendChild(tuButton(event.tu_id, "event-tu"));
+      else target.textContent = "server";
+      row.appendChild(target);
+      row.appendChild(div("event-cell event-detail", detailText(event.detail) || "-"));
+      root.appendChild(row);
+    }
   }
-  const head = div("event-row event-head");
-  ["Time", "Event", "Actor", "Target", "Details"].forEach((label) =>
-    head.appendChild(div("event-cell", label)),
-  );
-  root.appendChild(head);
-  for (const event of events) {
-    state.lastEventId = Math.max(state.lastEventId, event.id || 0);
-    const row = div("event-row");
-    row.appendChild(div("event-cell event-time", shortTime(event.ts)));
-    row.appendChild(div("event-cell event-action", event.action || "event"));
-    const actor = div("event-cell");
-    actor.appendChild(event.agent ? actorNode(event.agent) : span("muted-text", "server"));
-    row.appendChild(actor);
-    const target = div("event-cell event-target");
-    if (event.tu_id) target.appendChild(tuButton(event.tu_id, "event-tu"));
-    else target.textContent = "server";
-    row.appendChild(target);
-    row.appendChild(div("event-cell event-detail", detailText(event.detail) || "-"));
-    root.appendChild(row);
-  }
+  renderMiniFoot("events", events.length, from, to, page, totalPages);
+}
+
+/* ---------------- Shared mini-panel pager ---------------- */
+
+function paginate(items, view) {
+  const totalPages = Math.max(1, Math.ceil(items.length / view.perPage));
+  const page = Math.min(Math.max(1, view.page), totalPages);
+  const start = (page - 1) * view.perPage;
+  const slice = items.slice(start, start + view.perPage);
+  return {
+    slice,
+    page,
+    totalPages,
+    from: items.length ? start + 1 : 0,
+    to: start + slice.length,
+  };
+}
+
+function renderMiniFoot(prefix, total, from, to, page, totalPages) {
+  text(`${prefix}Range`, `${fmtInt(from)}-${fmtInt(to)} of ${fmtInt(total)}`);
+  text(`${prefix}PageStatus`, `Page ${fmtInt(page)} of ${fmtInt(totalPages)}`);
+  el(`${prefix}Prev`).disabled = page <= 1;
+  el(`${prefix}Next`).disabled = page >= totalPages;
 }
 
 function renderGoals(goals) {
@@ -875,6 +996,46 @@ function resetAndLoad() {
   loadExplorer();
 }
 
+// Wire the search box, filter selects, and Prev/Next for the Live Events and
+// Next Queue mini-panels. Filtering happens over the in-memory `view.all`.
+function initMiniPanels() {
+  const panels = [
+    { view: state.eventsView, prefix: "events", render: renderEvents, filters: [
+      ["eventsFilterAction", "action"],
+      ["eventsFilterActor", "actor"],
+    ] },
+    { view: state.queueView, prefix: "queue", render: renderQueue, filters: [
+      ["queueFilterSource", "source"],
+    ] },
+  ];
+  for (const { view, prefix, render, filters } of panels) {
+    el(`${prefix}Search`).addEventListener("input", (e) => {
+      const value = e.target.value.trim();
+      clearTimeout(view.searchTimer);
+      view.searchTimer = setTimeout(() => {
+        view.q = value;
+        view.page = 1;
+        render();
+      }, 200);
+    });
+    for (const [id, key] of filters) {
+      el(id).addEventListener("change", (e) => {
+        view[key] = e.target.value;
+        view.page = 1;
+        render();
+      });
+    }
+    el(`${prefix}Prev`).addEventListener("click", () => {
+      view.page = Math.max(1, view.page - 1);
+      render();
+    });
+    el(`${prefix}Next`).addEventListener("click", () => {
+      view.page += 1;
+      render();
+    });
+  }
+}
+
 function initExplorer() {
   const ex = state.explorer;
 
@@ -1161,6 +1322,7 @@ refresh();
 connectStream();
 refreshGithub();
 initExplorer();
+initMiniPanels();
 // GitHub data changes slowly and is cached server-side; poll gently.
 state.githubTimer = window.setInterval(refreshGithub, 90000);
 document.addEventListener("visibilitychange", () => {
