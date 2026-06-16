@@ -26,6 +26,9 @@ const state = {
   // the dashboard payload carries the full lists; we filter/search/page here.
   eventsView: { all: [], q: "", action: "", actor: "", page: 1, perPage: 50, searchTimer: null },
   queueView: { all: [], q: "", source: "", page: 1, perPage: 50, searchTimer: null },
+  // Resolved commit SHA -> authored date. Backfilled events share one import
+  // timestamp; their real time is the date of the commit they reference.
+  commitDates: {},
 };
 
 /* Build a github.com/blob URL for a path inside the mirrored repo. */
@@ -78,6 +81,33 @@ function shortTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+// Authored date of the commit an event references, once resolved from GitHub.
+function commitDate(event) {
+  const sha = event && event.detail && event.detail.commit;
+  return sha ? state.commitDates[sha] || null : null;
+}
+
+// Label for the Live Events "Time" column. Backfilled rows share one import
+// timestamp, so when we know the referenced commit's date we show that instead
+// — and include the date, since those commits can be days old. Live server
+// timestamps stay compact (time only), as before.
+function eventTimeLabel(event) {
+  const commit = commitDate(event);
+  const value = commit || (event && event.ts);
+  if (!value) return "none";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  if (commit) {
+    return date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  return shortTime(value);
 }
 
 function relTime(value) {
@@ -391,6 +421,37 @@ function setEventsData(events) {
     "All actors",
   );
   renderEvents();
+  resolveCommitDates(view.all);
+}
+
+// Resolve referenced commit SHAs to real dates so backfilled rows stop showing
+// the shared import timestamp. SHAs are deduped, cached client- and server-side,
+// and chunked to respect the endpoint's per-request cap; failures fall back to
+// the timestamp already on screen.
+async function resolveCommitDates(events) {
+  const COMMIT_DATES_LIMIT = 200;
+  const shas = [
+    ...new Set(
+      (events || [])
+        .map((e) => e.detail && e.detail.commit)
+        .filter((sha) => sha && !(sha in state.commitDates)),
+    ),
+  ];
+  if (!shas.length) return;
+  let changed = false;
+  for (let i = 0; i < shas.length; i += COMMIT_DATES_LIMIT) {
+    const chunk = shas.slice(i, i + COMMIT_DATES_LIMIT);
+    try {
+      const data = await fetchJson(
+        `/github/commit-dates?shas=${encodeURIComponent(chunk.join(","))}`,
+      );
+      Object.assign(state.commitDates, data.dates || {});
+      changed = true;
+    } catch (_) {
+      // Non-fatal: keep showing the import timestamp for unresolved rows.
+    }
+  }
+  if (changed) renderEvents();
 }
 
 function filteredEvents() {
@@ -429,7 +490,14 @@ function renderEvents() {
     root.appendChild(head);
     for (const event of slice) {
       const row = div("event-row");
-      row.appendChild(div("event-cell event-time", shortTime(event.ts)));
+      const timeCell = div("event-cell event-time", eventTimeLabel(event));
+      const resolved = commitDate(event);
+      if (resolved) {
+        timeCell.title = `commit date: ${fmtTime(resolved)}`;
+      } else if (event.ts) {
+        timeCell.title = fmtTime(event.ts);
+      }
+      row.appendChild(timeCell);
       row.appendChild(div("event-cell event-action", event.action || "event"));
       const actor = div("event-cell");
       actor.appendChild(event.agent ? actorNode(event.agent) : span("muted-text", "server"));

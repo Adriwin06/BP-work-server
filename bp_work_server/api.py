@@ -419,6 +419,19 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         """Cached GitHub repo info, recent commits, and file tree for the dev branch."""
         return await app.state.github.overview()
 
+    @app.get("/github/commit-dates")
+    async def github_commit_dates(
+        shas: str = Query("", description="Comma-separated commit SHAs"),
+    ) -> dict:
+        """Resolve commit SHAs to their authored dates.
+
+        Lets the Live Events panel show a real date for backfilled rows, which
+        otherwise all share the single import timestamp. Each SHA is resolved at
+        most once and cached for a day, so this is cheap against the rate limit.
+        """
+        wanted = [s.strip() for s in shas.split(",") if s.strip()]
+        return {"dates": await app.state.github.commit_dates(wanted)}
+
     @app.get("/events/stream")
     async def event_stream(
         after: int = Query(0, ge=0),
