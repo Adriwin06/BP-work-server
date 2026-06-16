@@ -51,7 +51,8 @@ def test_dashboard_page_and_state(tmp_path):
 
 
 def test_claim_updates_dashboard_agents(tmp_path):
-    client, _ = make_client(tmp_path)
+    client, store = make_client(tmp_path)
+    store.create_worker("idle-user")
 
     response = client.post(
         "/claims",
@@ -62,7 +63,45 @@ def test_claim_updates_dashboard_agents(tmp_path):
     assert response.status_code == 201
     assert state["counts"]["in_progress"] == 1
     assert state["agents"][0]["name"] == "agent-a"
+    assert state["agents"][0]["has_active_work"] is True
+    assert state["agents"][0]["current_work"] == ["GameSource/B.cpp"]
+    assert any(agent["name"] == "idle-user" and agent["has_active_work"] is False for agent in state["agents"])
     assert state["active_work"][0]["id"] == "GameSource/B.cpp"
+
+
+def test_dashboard_agents_include_event_activity(tmp_path):
+    client, store = make_client(tmp_path)
+    store.create_worker("agent-a")
+
+    client.post("/claims", json={"tu": "GameSource/B.cpp", "agent": "agent-a"})
+    client.post(
+        "/tu/GameSource%2FB.cpp/compiled",
+        json={"agent": "agent-a", "notes": "compiled", "files": []},
+    )
+    client.post(
+        "/tu/GameSource%2FB.cpp/review",
+        json={"agent": "agent-a", "verdict": "pass", "notes": "done", "files": []},
+    )
+    client.post("/claims", json={"tu": "GameSource/A.cpp", "agent": "agent-a"})
+
+    state = client.get("/dashboard/state").json()
+
+    assert state["agents"][0]["completed"] == 1
+    assert state["agents"][0]["last_activity"]
+    assert state["active_work"][0]["last_actor"] == "agent-a"
+
+
+def test_dashboard_lists_registered_agents_without_claims(tmp_path):
+    client, store = make_client(tmp_path)
+    store.create_worker("Adriwin", is_admin=True)
+    store.create_worker("JeBobs")
+
+    state = client.get("/dashboard/state").json()
+
+    names = [agent["name"] for agent in state["agents"]]
+    assert names == ["Adriwin", "JeBobs"]
+    assert all(agent["has_active_work"] is False for agent in state["agents"])
+    assert state["agents"][0]["is_admin"] is True
 
 
 def test_finished_owner_is_not_an_active_agent(tmp_path):
@@ -110,7 +149,11 @@ def test_path_encoded_tu_status_endpoints(tmp_path):
 
 
 def test_explorer_search_filter_and_detail(tmp_path):
-    client, _ = make_client(tmp_path)
+    client, store = make_client(tmp_path)
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO tu_dep(tu_id, dep_id, weight) VALUES('GameSource/A.cpp', 'GameSource/B.cpp', 1)"
+        )
 
     facets = client.get("/api/facets").json()
     assert "decfigs" in facets["sources"]
@@ -120,6 +163,8 @@ def test_explorer_search_filter_and_detail(tmp_path):
     search = client.get("/api/tus", params={"q": "A.cpp", "status": ["todo"]}).json()
     assert search["total"] == 1
     assert search["items"][0]["id"] == "GameSource/A.cpp"
+    assert search["items"][0]["total_deps"] == 1
+    assert search["items"][0]["unresolved_deps"] == 1
 
     # function search
     funcs = client.get("/api/funcs", params={"q": "Run"}).json()

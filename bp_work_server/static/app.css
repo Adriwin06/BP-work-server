@@ -681,10 +681,9 @@ small {
 }
 
 .commit-list,
-.event-list {
+.event-table {
   margin: 0;
   padding: 0;
-  list-style: none;
 }
 
 .commit-list li {
@@ -813,7 +812,7 @@ small {
 .panel > .queue,
 .panel > .goal-list,
 .panel > .blocked-list,
-.panel > .event-list,
+.panel > .event-table,
 .panel > .table-wrap {
   flex: 1 1 auto;
   min-height: 0;
@@ -831,8 +830,7 @@ small {
 .agent-row,
 .queue-row,
 .goal-row,
-.blocked-row,
-.event-list li {
+.blocked-row {
   position: relative;
   padding: 13px 18px;
   border-bottom: 1px solid var(--line-soft);
@@ -841,8 +839,7 @@ small {
 .agent-row:last-child,
 .queue-row:last-child,
 .goal-row:last-child,
-.blocked-row:last-child,
-.event-list li:last-child {
+.blocked-row:last-child {
   border-bottom: 0;
 }
 
@@ -910,6 +907,17 @@ tbody tr:hover td {
   font-weight: 600;
   font-size: 13.5px;
   overflow-wrap: anywhere;
+}
+
+.agent-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.agent-idle {
+  opacity: 0.78;
 }
 
 .tu-name {
@@ -1012,14 +1020,50 @@ td:nth-child(4) {
   width: 16%;
 }
 
-.event-list {
+.event-table {
   max-height: 540px;
   overflow: auto;
 }
 
-.event-list li {
-  display: flex;
-  flex-direction: column;
+.event-row {
+  display: grid;
+  grid-template-columns: 88px 110px 120px minmax(160px, 1.15fr) minmax(180px, 1.35fr);
+  gap: 1px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.event-row:last-child {
+  border-bottom: 0;
+}
+
+.event-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #14110f;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-head);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.event-cell {
+  min-width: 0;
+  padding: 9px 10px;
+  overflow-wrap: anywhere;
+}
+
+.event-time,
+.event-action {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.event-detail {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .bar {
@@ -1337,12 +1381,56 @@ td:nth-child(4) {
 
 .pager {
   display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
 .pager .filter:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.page-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.page-btn {
+  min-width: 36px;
+  padding-inline: 10px;
+}
+
+.page-ellipsis,
+.page-status,
+.page-jump {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--font-head);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.page-jump input {
+  width: 70px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.page-jump input:focus {
+  outline: none;
+  border-color: var(--red);
+  box-shadow: var(--glow);
 }
 
 .explorer-foot {
@@ -1370,6 +1458,74 @@ td:nth-child(4) {
   font-family: var(--font-mono);
   font-size: 12px;
   word-break: break-all;
+}
+
+.text-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.text-link:hover,
+.text-link:focus-visible,
+.actor-link:hover,
+.actor-link:focus-visible {
+  color: #fff;
+  text-decoration: underline;
+  outline: none;
+}
+
+.actor-link,
+.actor-name {
+  font-weight: 700;
+}
+
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-head);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  clip-path: polygon(5px 0, 100% 0, calc(100% - 5px) 100%, 0 100%);
+}
+
+.agent-badge.active {
+  color: #c5f3b8;
+  background: rgba(111, 207, 87, 0.22);
+}
+
+.agent-badge.admin {
+  color: var(--gold);
+  background: rgba(227, 165, 44, 0.16);
+}
+
+.agent-badge.inactive {
+  color: var(--faint);
+  background: rgba(157, 145, 130, 0.12);
+}
+
+.agent-work {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.tu-chip {
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid rgba(227, 165, 44, 0.35);
+  color: var(--gold);
+  background: rgba(227, 165, 44, 0.08);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 /* ---------- Detail drawer ---------- */

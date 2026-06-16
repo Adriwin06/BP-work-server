@@ -166,7 +166,13 @@
             <span id="explorerRange" class="muted-text">—</span>
             <div class="pager">
               <button id="pagePrev" class="filter">Prev</button>
+              <div id="pageButtons" class="page-buttons" aria-label="Pages"></div>
               <button id="pageNext" class="filter">Next</button>
+              <span id="pageStatus" class="page-status">Page 1 of 1</span>
+              <label class="page-jump">
+                <span>Jump</span>
+                <input id="pageJump" type="number" min="1" value="1" />
+              </label>
             </div>
           </div>
         </section>
@@ -251,7 +257,7 @@
               <h2>Live Events</h2>
               <span id="eventCount" class="badge">0 events</span>
             </div>
-            <ol id="events" class="event-list empty"></ol>
+            <div id="events" class="event-table empty"></div>
           </section>
 
           <section class="card panel goals">

@@ -23,6 +23,15 @@ const state = {
   },
 };
 
+const USER_PROFILES = {
+  Adriwin: "Adriwin06",
+  Adriwin06: "Adriwin06",
+  JeBobs: "JeBobs",
+  Derneuere: "JeBobs",
+  "Nathan V": "JeBobs",
+  "Nathan V.": "JeBobs",
+};
+
 /* Build a github.com/blob URL for a path inside the mirrored repo. */
 function ghBlobUrl(path) {
   if (!path) return null;
@@ -133,6 +142,40 @@ function span(className, content) {
   return node;
 }
 
+function actorNode(name) {
+  if (!name) return span("muted-text", "none");
+  const profile = USER_PROFILES[name] || USER_PROFILES[String(name).trim()];
+  if (!profile) return span("actor-name", name);
+  const link = document.createElement("a");
+  link.className = "actor-link";
+  link.href = `https://github.com/${profile}`;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.textContent = name;
+  link.title = `Open ${name} on GitHub`;
+  return link;
+}
+
+function tuButton(tuId, className = "tu-name") {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `text-link ${className}`;
+  btn.textContent = tuId;
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openDetail(tuId);
+  });
+  return btn;
+}
+
+function detailText(detail) {
+  if (!detail || !Object.keys(detail).length) return "";
+  return Object.entries(detail)
+    .filter(([, value]) => value !== null && value !== "" && value !== undefined)
+    .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : value}`)
+    .join(" | ");
+}
+
 /* ---------------- Work dashboard ---------------- */
 
 async function refresh() {
@@ -177,25 +220,43 @@ function render(data) {
 }
 
 function renderAgents(agents) {
-  text("agentCount", `${agents.length} active`);
+  const activeCount = agents.filter((agent) => agent.has_active_work || Number(agent.total || 0) > 0).length;
+  text("agentCount", `${fmtInt(agents.length)} users | ${fmtInt(activeCount)} active`);
   const root = el("agents");
   clearNode(root);
   root.className = agents.length ? "agent-list" : "agent-list empty";
   if (!agents.length) {
-    root.textContent = "No active claims.";
+    root.textContent = "No users registered.";
     return;
   }
   for (const agent of agents) {
     const row = div("agent-row");
-    row.appendChild(div("agent-name", agent.name || "unknown"));
+    row.classList.toggle("agent-idle", !agent.has_active_work && Number(agent.total || 0) === 0);
+    const name = div("agent-name");
+    name.appendChild(actorNode(agent.name || "unknown"));
+    if (agent.has_active_work || Number(agent.total || 0) > 0) {
+      name.appendChild(span("agent-badge active", "active"));
+    }
+    if (agent.is_admin) {
+      name.appendChild(span("agent-badge admin", "admin"));
+    }
+    if (agent.registered && !agent.worker_active) {
+      name.appendChild(span("agent-badge inactive", "disabled"));
+    }
+    row.appendChild(name);
     row.appendChild(
       div(
         "agent-meta",
-        `${fmtInt(agent.in_progress)} in progress · ${fmtInt(agent.compiled)} compiled · lease ${shortTime(
+        `${fmtInt(agent.total)} active | ${fmtInt(agent.completed)} completed | lease ${shortTime(
           agent.lease_expires_at,
-        )}`,
+        )} | last ${relTime(agent.last_activity || agent.last_update || agent.last_seen) || "never"}`,
       ),
     );
+    if (agent.current_work && agent.current_work.length) {
+      const work = div("agent-work");
+      for (const tuId of agent.current_work) work.appendChild(tuButton(tuId, "tu-chip"));
+      row.appendChild(work);
+    }
     root.appendChild(row);
   }
 }
@@ -216,16 +277,18 @@ function renderActiveWork(items) {
   }
   for (const item of items) {
     const row = document.createElement("tr");
+    row.className = "clickable";
     const name = document.createElement("td");
-    name.appendChild(div("tu-name", item.id));
+    name.appendChild(tuButton(item.id));
     name.appendChild(div("tu-meta", `${item.source || "unknown"} · ${fmtInt(item.n_funcs)} funcs`));
     const status = document.createElement("td");
     status.appendChild(span(`pill ${item.status}`, item.status.replace("_", " ")));
     const owner = document.createElement("td");
-    owner.textContent = item.owner || "none";
+    owner.appendChild(actorNode(item.owner));
     const lease = document.createElement("td");
-    lease.textContent = shortTime(item.lease_expires_at);
+    lease.textContent = item.lease_expires_at ? shortTime(item.lease_expires_at) : "no active lease";
     row.append(name, status, owner, lease);
+    row.addEventListener("click", () => openDetail(item.id));
     body.appendChild(row);
   }
 }
@@ -241,15 +304,17 @@ function renderNextQueue(items) {
   }
   for (const item of items) {
     const row = div("queue-row");
-    row.appendChild(div("tu-name", item.id));
+    row.classList.add("clickable");
+    row.appendChild(tuButton(item.id));
     row.appendChild(
       div(
         "tu-meta",
-        `${item.source || "unknown"} · ${fmtInt(item.n_funcs)} funcs · unresolved deps ${fmtInt(
+        `${item.source || "unknown"} · ${fmtInt(item.n_funcs)} funcs · ${fmtInt(
           item.unresolved_deps,
-        )}`,
+        )} unresolved deps`,
       ),
     );
+    row.addEventListener("click", () => openDetail(item.id));
     root.appendChild(row);
   }
 }
@@ -258,18 +323,29 @@ function renderEvents(events) {
   text("eventCount", `${events.length} events`);
   const root = el("events");
   clearNode(root);
-  root.className = events.length ? "event-list" : "event-list empty";
+  root.className = events.length ? "event-table" : "event-table empty";
   if (!events.length) {
-    const row = document.createElement("li");
-    row.textContent = "No events yet.";
-    root.appendChild(row);
+    root.textContent = "No events yet.";
     return;
   }
+  const head = div("event-row event-head");
+  ["Time", "Event", "Actor", "Target", "Details"].forEach((label) =>
+    head.appendChild(div("event-cell", label)),
+  );
+  root.appendChild(head);
   for (const event of events) {
     state.lastEventId = Math.max(state.lastEventId, event.id || 0);
-    const row = document.createElement("li");
-    row.appendChild(div("event-title", `${event.action}${event.agent ? ` by ${event.agent}` : ""}`));
-    row.appendChild(div("event-meta", `${shortTime(event.ts)} · ${event.tu_id || "server"}`));
+    const row = div("event-row");
+    row.appendChild(div("event-cell event-time", shortTime(event.ts)));
+    row.appendChild(div("event-cell event-action", event.action || "event"));
+    const actor = div("event-cell");
+    actor.appendChild(event.agent ? actorNode(event.agent) : span("muted-text", "server"));
+    row.appendChild(actor);
+    const target = div("event-cell event-target");
+    if (event.tu_id) target.appendChild(tuButton(event.tu_id, "event-tu"));
+    else target.textContent = "server";
+    row.appendChild(target);
+    row.appendChild(div("event-cell event-detail", detailText(event.detail) || "-"));
     root.appendChild(row);
   }
 }
@@ -310,8 +386,10 @@ function renderBlocked(items) {
   }
   for (const item of items) {
     const row = div("blocked-row");
-    row.appendChild(div("tu-name", item.id));
+    row.classList.add("clickable");
+    row.appendChild(tuButton(item.id));
     row.appendChild(div("tu-meta", item.notes || "No reason recorded."));
+    row.addEventListener("click", () => openDetail(item.id));
     root.appendChild(row);
   }
 }
@@ -654,9 +732,50 @@ function renderExplorerFoot() {
   text("explorerCount", `${fmtInt(ex.total)} results`);
   const from = ex.total === 0 ? 0 : ex.offset + 1;
   const to = Math.min(ex.offset + ex.limit, ex.total);
-  text("explorerRange", `${fmtInt(from)}–${fmtInt(to)} of ${fmtInt(ex.total)}`);
+  const totalPages = Math.max(1, Math.ceil(ex.total / ex.limit));
+  const currentPage = Math.min(totalPages, Math.floor(ex.offset / ex.limit) + 1);
+  text("explorerRange", `${fmtInt(from)}-${fmtInt(to)} of ${fmtInt(ex.total)}`);
+  text("pageStatus", `Page ${fmtInt(currentPage)} of ${fmtInt(totalPages)}`);
   el("pagePrev").disabled = ex.offset <= 0;
   el("pageNext").disabled = ex.offset + ex.limit >= ex.total;
+  const jump = el("pageJump");
+  jump.max = totalPages;
+  jump.value = currentPage;
+  renderPageButtons(currentPage, totalPages);
+}
+
+function goToPage(page) {
+  const ex = state.explorer;
+  const totalPages = Math.max(1, Math.ceil(ex.total / ex.limit));
+  const nextPage = Math.max(1, Math.min(totalPages, Number(page) || 1));
+  const nextOffset = (nextPage - 1) * ex.limit;
+  if (nextOffset === ex.offset) {
+    renderExplorerFoot();
+    return;
+  }
+  ex.offset = nextOffset;
+  loadExplorer();
+}
+
+function renderPageButtons(currentPage, totalPages) {
+  const root = el("pageButtons");
+  clearNode(root);
+  const pages = new Set([1, totalPages]);
+  for (let page = currentPage - 1; page <= currentPage + 1; page += 1) {
+    if (page >= 1 && page <= totalPages) pages.add(page);
+  }
+  let prev = 0;
+  for (const page of [...pages].sort((a, b) => a - b)) {
+    if (page - prev > 1) root.appendChild(span("page-ellipsis", "..."));
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "filter page-btn";
+    btn.textContent = page;
+    btn.disabled = page === currentPage;
+    btn.addEventListener("click", () => goToPage(page));
+    root.appendChild(btn);
+    prev = page;
+  }
 }
 
 function setHead(cols) {
@@ -672,7 +791,7 @@ function setHead(cols) {
 }
 
 function renderTuRows(items) {
-  setHead(["Translation Unit", "Status", "Funcs", "Source", "Deps", "Owner"]);
+  setHead(["Translation Unit", "Status", "Funcs", "Source", "Unresolved Deps", "Actor"]);
   const body = el("explorerBody");
   clearNode(body);
   if (!items.length) return emptyRow(body, 6, "No translation units match.");
@@ -687,9 +806,27 @@ function renderTuRows(items) {
     const src = document.createElement("td");
     src.textContent = item.source || "—";
     const deps = document.createElement("td");
-    deps.textContent = item.unresolved_deps == null ? "—" : fmtInt(item.unresolved_deps);
+    const unresolved = item.unresolved_deps == null ? null : Number(item.unresolved_deps);
+    deps.textContent =
+      unresolved == null ? "dependency data unavailable" : `${fmtInt(unresolved)} unresolved`;
+    deps.title =
+      item.total_deps == null
+        ? "Dependency tracking is unavailable for this row."
+        : `${fmtInt(item.total_deps)} recorded dependencies`;
     const owner = document.createElement("td");
-    owner.textContent = item.owner || "—";
+    if (item.owner && ["in_progress", "compiled"].includes(item.status)) {
+      owner.appendChild(actorNode(item.owner));
+      owner.appendChild(div("tu-meta", "active claim"));
+    } else if (item.completed_by) {
+      owner.appendChild(actorNode(item.completed_by));
+      owner.appendChild(div("tu-meta", "completed"));
+    } else if (item.last_actor) {
+      owner.appendChild(actorNode(item.last_actor));
+      owner.appendChild(div("tu-meta", item.last_action || "last activity"));
+    } else {
+      owner.textContent = "no live claim";
+      owner.title = "No reliable completed-by owner is stored for imported status rows.";
+    }
     const status = document.createElement("td");
     status.appendChild(statusPill(item.status));
     row.append(name, status, fn, src, deps, owner);
@@ -711,7 +848,7 @@ function renderFuncRows(items) {
     const status = document.createElement("td");
     status.appendChild(statusPill(item.status));
     const tu = document.createElement("td");
-    tu.appendChild(div("tu-meta", item.tu_id));
+    tu.appendChild(tuButton(item.tu_id, "tu-meta"));
     row.append(name, status, tu);
     row.addEventListener("click", () => openDetail(item.tu_id));
     body.appendChild(row);
@@ -789,6 +926,10 @@ function initExplorer() {
       loadExplorer();
     }
   });
+  el("pageJump").addEventListener("change", (e) => goToPage(e.target.value));
+  el("pageJump").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") goToPage(e.target.value);
+  });
 
   el("detailClose").addEventListener("click", closeDetail);
   el("detailOverlay").addEventListener("click", (e) => {
@@ -854,7 +995,9 @@ function renderDetail(d) {
   facts.appendChild(kv("Source", d.source));
   facts.appendChild(kv("Functions", fmtInt(d.n_funcs)));
   facts.appendChild(kv("Decfigs", fmtInt(d.n_decfigs)));
-  facts.appendChild(kv("Owner", d.owner));
+  facts.appendChild(kv("Active claim", d.owner ? actorNode(d.owner) : null));
+  if (d.completed_by) facts.appendChild(kv("Completed by", actorNode(d.completed_by)));
+  else if (d.last_actor) facts.appendChild(kv("Last actor", actorNode(d.last_actor)));
   facts.appendChild(kv("Updated", d.updated_at ? `${fmtTime(d.updated_at)} (${relTime(d.updated_at)})` : null));
   if (d.commit) facts.appendChild(kv("Commit", d.commit));
   const repoPath = destToRepoPath(d.dest_path);

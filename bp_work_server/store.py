@@ -546,6 +546,31 @@ class WorkStore:
                 for r in con.execute("SELECT * FROM worker ORDER BY created_at, username")
             ]
 
+    def _registered_agents(self) -> dict[str, dict[str, Any]]:
+        with self.users_connect() as con:
+            return {
+                row["username"]: {
+                    "active": bool(row["active"]),
+                    "is_admin": bool(row["is_admin"]),
+                    "tokens": row["tokens"],
+                    "created_at": row["created_at"],
+                    "last_seen": row["last_seen"],
+                }
+                for row in con.execute(
+                    """
+                    SELECT username,
+                           MAX(active) AS active,
+                           MAX(is_admin) AS is_admin,
+                           COUNT(*) AS tokens,
+                           MIN(created_at) AS created_at,
+                           MAX(last_seen) AS last_seen
+                    FROM worker
+                    GROUP BY username
+                    ORDER BY username
+                    """
+                )
+            }
+
     def revoke_worker(self, token: str) -> bool:
         with self.users_connect() as con:
             cur = con.execute("UPDATE worker SET active=0 WHERE token=?", (token,))
@@ -652,6 +677,7 @@ class WorkStore:
                     """
                 )
             ]
+            self._enrich_tu_items(con, active_work)
             blocked = [
                 self._dashboard_tu(row)
                 for row in con.execute(
@@ -664,9 +690,35 @@ class WorkStore:
                     """
                 )
             ]
-            agents = [
-                {
-                    "name": row["owner"],
+            self._enrich_tu_items(con, blocked)
+            agent_work: dict[str, list[str]] = defaultdict(list)
+            for item in active_work:
+                if item["owner"]:
+                    agent_work[item["owner"]].append(item["id"])
+            completed_by_agent = {
+                row["agent"]: row["completed"]
+                for row in con.execute(
+                    """
+                    SELECT agent, COUNT(DISTINCT tu_id) AS completed
+                    FROM event
+                    WHERE agent IS NOT NULL AND action='review_pass' AND tu_id IS NOT NULL
+                    GROUP BY agent
+                    """
+                )
+            }
+            last_activity_by_agent = {
+                row["agent"]: row["last_activity"]
+                for row in con.execute(
+                    """
+                    SELECT agent, MAX(ts) AS last_activity
+                    FROM event
+                    WHERE agent IS NOT NULL
+                    GROUP BY agent
+                    """
+                )
+            }
+            active_agents = {
+                row["owner"]: {
                     "in_progress": row["in_progress"],
                     "compiled": row["compiled"],
                     "total": row["total"],
@@ -687,7 +739,41 @@ class WorkStore:
                     ORDER BY total DESC, owner
                     """
                 )
-            ]
+            }
+            registered_agents = self._registered_agents()
+            agent_names = set(registered_agents) | set(active_agents)
+            agents = []
+            for name in sorted(
+                agent_names,
+                key=lambda n: (
+                    -(active_agents.get(n, {}).get("total") or 0),
+                    n.lower(),
+                ),
+            ):
+                active = active_agents.get(name, {})
+                registered = registered_agents.get(name, {})
+                agents.append(
+                    {
+                        "name": name,
+                        "registered": bool(registered),
+                        "worker_active": bool(registered.get("active", True)),
+                        "is_admin": bool(registered.get("is_admin", False)),
+                        "worker_tokens": registered.get("tokens", 0),
+                        "created_at": registered.get("created_at"),
+                        "last_seen": registered.get("last_seen"),
+                        "in_progress": active.get("in_progress", 0),
+                        "compiled": active.get("compiled", 0),
+                        "total": active.get("total", 0),
+                        "has_active_work": bool(active.get("total", 0)),
+                        "completed": completed_by_agent.get(name, 0),
+                        "lease_expires_at": active.get("lease_expires_at"),
+                        "last_update": active.get("last_update"),
+                        "last_activity": last_activity_by_agent.get(
+                            name, active.get("last_update") or registered.get("last_seen")
+                        ),
+                        "current_work": agent_work.get(name, [])[:5],
+                    }
+                )
             recent_events = self._events_from_connection(con, after=0, limit=50)
             next_goal, next_items = self._next_tus_from_connection(con, n=20)
             goal_rows = [
@@ -826,8 +912,7 @@ class WorkStore:
                     [*params, limit, offset],
                 ).fetchall()
                 items = [self._dashboard_tu(row) for row in rows]
-                for item in items:
-                    item["unresolved_deps"] = None
+                self._enrich_tu_items(con, items)
                 return {"total": total, "limit": limit, "offset": offset, "items": items}
 
             rows = con.execute(
@@ -872,6 +957,7 @@ class WorkStore:
 
             total = len(items)
             page = items[offset : offset + limit]
+            self._enrich_tu_items(con, page)
             return {"total": total, "limit": limit, "offset": offset, "items": page}
 
     def tu_detail(self, tu_id: str) -> dict[str, Any]:
@@ -923,6 +1009,7 @@ class WorkStore:
                     "SELECT goal_name FROM goal_tu WHERE tu_id=? ORDER BY goal_name", (tu_id,)
                 )
             ]
+            self._enrich_tu_items(con, [detail])
             return detail
 
     def search_funcs(
@@ -1213,6 +1300,85 @@ class WorkStore:
             "lease_expires_at": row["lease_expires_at"],
             "commit": row["commit_hash"],
         }
+
+    def _enrich_tu_items(self, con: sqlite3.Connection, items: list[dict[str, Any]]) -> None:
+        """Attach derived fields used by the dashboard/explorer.
+
+        `owner` remains the live claim owner. Historical actor fields come from the
+        server event log only, so imported durable status never pretends to know an
+        author it does not actually have.
+        """
+        ids = [item["id"] for item in items]
+        if not ids:
+            return
+        by_id = {item["id"]: item for item in items}
+        placeholders = ",".join("?" for _ in ids)
+
+        for item in items:
+            item.setdefault("total_deps", 0)
+            item.setdefault("unresolved_deps", 0)
+            item.setdefault("last_actor", None)
+            item.setdefault("last_action", None)
+            item.setdefault("last_event_at", None)
+            item.setdefault("completed_by", None)
+            item.setdefault("completed_at", None)
+
+        for row in con.execute(
+            f"""
+            SELECT d.tu_id,
+                   COUNT(*) AS total_deps,
+                   SUM(CASE WHEN COALESCE(t.status, 'todo') != 'done' THEN 1 ELSE 0 END)
+                     AS unresolved_deps
+            FROM tu_dep d
+            LEFT JOIN tu t ON t.id=d.dep_id
+            WHERE d.tu_id IN ({placeholders})
+            GROUP BY d.tu_id
+            """,
+            ids,
+        ):
+            item = by_id.get(row["tu_id"])
+            if item is not None:
+                item["total_deps"] = row["total_deps"] or 0
+                item["unresolved_deps"] = row["unresolved_deps"] or 0
+
+        for row in con.execute(
+            f"""
+            SELECT e.tu_id, e.agent, e.action, e.ts
+            FROM event e
+            JOIN (
+              SELECT tu_id, MAX(id) AS max_id
+              FROM event
+              WHERE tu_id IN ({placeholders}) AND agent IS NOT NULL
+              GROUP BY tu_id
+            ) latest ON latest.max_id=e.id
+            """,
+            ids,
+        ):
+            item = by_id.get(row["tu_id"])
+            if item is not None:
+                item["last_actor"] = row["agent"]
+                item["last_action"] = row["action"]
+                item["last_event_at"] = row["ts"]
+
+        for row in con.execute(
+            f"""
+            SELECT e.tu_id, e.agent, e.ts
+            FROM event e
+            JOIN (
+              SELECT tu_id, MAX(id) AS max_id
+              FROM event
+              WHERE tu_id IN ({placeholders})
+                AND agent IS NOT NULL
+                AND action='review_pass'
+              GROUP BY tu_id
+            ) completed ON completed.max_id=e.id
+            """,
+            ids,
+        ):
+            item = by_id.get(row["tu_id"])
+            if item is not None:
+                item["completed_by"] = row["agent"]
+                item["completed_at"] = row["ts"]
 
     def _percent(self, value: int, total: int) -> float:
         if total <= 0:
