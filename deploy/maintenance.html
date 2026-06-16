@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <!-- Auto-retry: the page reloads itself until the backend is back. -->
+  <meta http-equiv="refresh" content="15">
+  <title>Deploying — BP Decomp</title>
+  <style>
+    :root {
+      --bg: #0a0809;
+      --surface: rgba(18, 16, 15, 0.94);
+      --line: #2a2320;
+      --text: #ece6da;
+      --muted: #9d9182;
+      --red: #cf1722;
+      --gold: #e3a52c;
+    }
+    * { box-sizing: border-box; }
+    html { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(120% 120% at 50% 0%, #161210 0%, var(--bg) 70%);
+      color: var(--text);
+      font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+      text-align: center;
+      padding: 24px;
+    }
+    .card {
+      max-width: 480px;
+      padding: 40px 36px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-top: 3px solid var(--red);
+      border-radius: 4px;
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+    }
+    h1 {
+      margin: 0 0 14px;
+      font-family: "Oswald", Impact, sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-size: 28px;
+      color: var(--gold);
+    }
+    p { margin: 0 0 10px; color: var(--muted); line-height: 1.5; }
+    .spinner {
+      width: 38px; height: 38px;
+      margin: 0 auto 26px;
+      border: 3px solid var(--line);
+      border-top-color: var(--red);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .hint { margin-top: 18px; font-size: 12px; color: #6f6557; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h1>Deploying a new version</h1>
+    <p>The site is updating and will be back in a few moments.</p>
+    <p>This page refreshes automatically.</p>
+    <p class="hint">If this persists for more than a few minutes, the deploy may have failed.</p>
+  </div>
+</body>
+</html>
