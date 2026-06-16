@@ -670,6 +670,30 @@ class WorkStore:
                     tus.append(self._tu_record(row))
             return self._get_meta(con, "active_goal"), StatusCounts(**counts), tus
 
+    # Sources marking backfilled events: these share one import timestamp and a
+    # single meaningless commit SHA, so their real time comes from the file's own
+    # last commit instead (see decomp.DecompRepo).
+    BACKFILLED_SOURCES = ("workflow commit delta", "legacy pre-server attribution")
+
+    def backfilled_event_targets(self) -> dict[str, str | None]:
+        """Map each backfilled event's TU id to its destination file path.
+
+        Deduplicated by TU id; used to date those events from the decomp repo.
+        """
+        placeholders = ",".join("?" for _ in self.BACKFILLED_SOURCES)
+        with self.connect() as con:
+            rows = con.execute(
+                f"""
+                SELECT DISTINCT e.tu_id AS tu_id, t.dest_path AS dest_path
+                FROM event e
+                JOIN tu t ON t.id = e.tu_id
+                WHERE e.tu_id IS NOT NULL
+                  AND json_extract(e.detail_json, '$.source') IN ({placeholders})
+                """,
+                self.BACKFILLED_SOURCES,
+            ).fetchall()
+            return {row["tu_id"]: row["dest_path"] for row in rows}
+
     def events(self, after: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         with self.connect() as con:
             rows = con.execute(

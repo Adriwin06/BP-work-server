@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from bp_work_server import __version__
+from bp_work_server.decomp import DecompRepo
 from bp_work_server.github import GitHubClient
 from bp_work_server.models import (
     AgentRequest,
@@ -73,6 +74,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     app.state.store = store or WorkStore(default_db_path(), default_users_db_path())
     app.state.store.migrate()
     app.state.github = GitHubClient()
+    app.state.decomp = DecompRepo()
     app.state.dashboard_cache = {"expires_at": 0.0, "data": None}
     app.state.dashboard_cache_lock = threading.Lock()
     static_dir = files("bp_work_server").joinpath("static")
@@ -399,9 +401,15 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         store: WorkStore = Depends(get_store),
     ) -> dict:
         try:
-            return store.tu_detail(id)
+            detail = store.tu_detail(id)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        # Headers are inlined into the .cpp, so a .h destination has no file of
+        # its own; expose the path that actually exists so the UI links there.
+        repo_path = app.state.decomp.repo_path(detail.get("dest_path"))
+        if repo_path:
+            detail["repo_path"] = repo_path
+        return detail
 
     @app.get("/api/funcs")
     def search_funcs(
@@ -419,18 +427,28 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         """Cached GitHub repo info, recent commits, and file tree for the dev branch."""
         return await app.state.github.overview()
 
-    @app.get("/github/commit-dates")
-    async def github_commit_dates(
-        shas: str = Query("", description="Comma-separated commit SHAs"),
-    ) -> dict:
-        """Resolve commit SHAs to their authored dates.
+    @app.get("/events/commit-dates")
+    async def events_commit_dates(store: WorkStore = Depends(get_store)) -> dict:
+        """Real dates for backfilled Live Events, keyed by TU id.
 
-        Lets the Live Events panel show a real date for backfilled rows, which
-        otherwise all share the single import timestamp. Each SHA is resolved at
-        most once and cached for a day, so this is cheap against the rate limit.
+        Those rows ("workflow commit delta" / "legacy pre-server attribution")
+        all share one import timestamp and one meaningless commit SHA, so we date
+        each instead by the last commit that touched its destination file in the
+        local decomp clone. Files that cannot be located are simply omitted, and
+        the dashboard keeps the stored timestamp for them.
         """
-        wanted = [s.strip() for s in shas.split(",") if s.strip()]
-        return {"dates": await app.state.github.commit_dates(wanted)}
+        targets = await asyncio.to_thread(store.backfilled_event_targets)
+        decomp: DecompRepo = app.state.decomp
+
+        def resolve() -> dict[str, str]:
+            dates: dict[str, str] = {}
+            for tu_id, dest_path in targets.items():
+                date = decomp.commit_date(dest_path)
+                if date:
+                    dates[tu_id] = date
+            return dates
+
+        return {"dates": await asyncio.to_thread(resolve)}
 
     @app.get("/events/stream")
     async def event_stream(

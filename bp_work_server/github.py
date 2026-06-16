@@ -32,34 +32,10 @@ REPO_OWNER = os.environ.get("BP_GITHUB_OWNER", "Adriwin06")
 REPO_NAME = os.environ.get("BP_GITHUB_REPO", "b5-decomp")
 REPO_REF = os.environ.get("BP_GITHUB_REF", "dev")
 
-
-def _parse_repo_slug(url: str) -> tuple[str, str]:
-    """Extract ``(owner, repo)`` from a github repo URL or ``owner/repo`` slug."""
-    slug = url.strip().removesuffix(".git")
-    slug = slug.split("github.com", 1)[-1].lstrip(":/")
-    parts = [p for p in slug.split("/") if p]
-    if len(parts) >= 2:
-        return parts[-2], parts[-1]
-    return REPO_OWNER, REPO_NAME
-
-
-# The workflow repo holds the commits that Live Events reference (their
-# ``detail.commit`` SHAs) — a different repo from the mirrored decomp source.
-WORKFLOW_OWNER, WORKFLOW_REPO = _parse_repo_slug(
-    os.environ.get("BP_WORKFLOW_REPO", "https://github.com/Adriwin06/BP-Decomp_Workflow.git")
-)
-
 # How long a cached resource is served before we revalidate upstream (seconds).
 TTL_REPO = 300
 TTL_COMMITS = 180
 TTL_TREE = 600
-# A commit's date never changes once it exists, so resolved single commits are
-# cached for a full day; repeated lookups of the same SHA never hit GitHub again.
-TTL_COMMIT = 86_400
-
-# Upper bound on distinct SHAs resolved in one /github/commit-dates request, so a
-# crafted query cannot fan out into thousands of upstream commit lookups at once.
-COMMIT_DATES_LIMIT = 200
 
 # Cap the tree we ship to the browser; the full recursive tree can be huge.
 TREE_LIMIT = 4000
@@ -78,9 +54,6 @@ class GitHubClient:
     owner: str = REPO_OWNER
     repo: str = REPO_NAME
     ref: str = REPO_REF
-    # Commits referenced by Live Events live in the workflow repo, not the mirror.
-    workflow_owner: str = WORKFLOW_OWNER
-    workflow_repo: str = WORKFLOW_REPO
     token: str | None = field(default_factory=lambda: os.environ.get("GITHUB_TOKEN"))
 
     _cache: dict[str, CacheEntry] = field(default_factory=dict)
@@ -223,39 +196,6 @@ class GitHubClient:
             return out
 
         return await self._fetch(f"commits:{count}", url, TTL_COMMITS, transform)
-
-    async def fetch_commit(self, sha: str) -> CacheEntry:
-        """Resolve a single commit SHA, keeping only its authored date.
-
-        Used to give backfilled events ("workflow commit delta" / "legacy
-        pre-server attribution") a real time: those rows share one import
-        timestamp but each carries the commit it came from, so the commit's own
-        date is the closest thing to when the work actually happened.
-        """
-        url = f"{GITHUB_API}/repos/{self.workflow_owner}/{self.workflow_repo}/commits/{sha}"
-
-        def transform(c: dict) -> dict:
-            commit = c.get("commit") or {}
-            author = commit.get("author") or {}
-            committer = commit.get("committer") or {}
-            return {
-                "sha": c.get("sha"),
-                # Prefer the authored date; fall back to the commit date.
-                "date": author.get("date") or committer.get("date"),
-            }
-
-        return await self._fetch(f"commit:{sha}", url, TTL_COMMIT, transform)
-
-    async def commit_dates(self, shas: list[str]) -> dict[str, str | None]:
-        """Map each distinct SHA to its commit date (``None`` when unresolved)."""
-        unique = list(dict.fromkeys(s for s in shas if s))[:COMMIT_DATES_LIMIT]
-        if not unique:
-            return {}
-        entries = await asyncio.gather(*(self.fetch_commit(sha) for sha in unique))
-        return {
-            sha: (entry.data or {}).get("date") if entry.data else None
-            for sha, entry in zip(unique, entries)
-        }
 
     async def fetch_tree(self) -> CacheEntry:
         url = (

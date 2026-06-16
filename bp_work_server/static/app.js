@@ -26,9 +26,10 @@ const state = {
   // the dashboard payload carries the full lists; we filter/search/page here.
   eventsView: { all: [], q: "", action: "", actor: "", page: 1, perPage: 50, searchTimer: null },
   queueView: { all: [], q: "", source: "", page: 1, perPage: 50, searchTimer: null },
-  // Resolved commit SHA -> authored date. Backfilled events share one import
-  // timestamp; their real time is the date of the commit they reference.
-  commitDates: {},
+  // TU id -> real date for backfilled events. Those share one import timestamp;
+  // their real time is the last commit that touched the TU's destination file.
+  eventDates: {},
+  eventDatesFetched: false,
 };
 
 /* Build a github.com/blob URL for a path inside the mirrored repo. */
@@ -83,24 +84,25 @@ function shortTime(value) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-// Authored date of the commit an event references, once resolved from GitHub.
-function commitDate(event) {
-  const sha = event && event.detail && event.detail.commit;
-  return sha ? state.commitDates[sha] || null : null;
+// Real date for a backfilled event: the last commit that touched its TU's
+// destination file, resolved server-side and keyed by TU id.
+function eventCommitDate(event) {
+  const tuId = event && event.tu_id;
+  return tuId ? state.eventDates[tuId] || null : null;
 }
 
-// Label for the Live Events "Time" column. Backfilled rows share one import
-// timestamp, so when we know the referenced commit's date we show that instead
-// — and include the date, since those commits can be days old. Live server
+// Label for the Live Events "Time" column. Backfilled rows share one meaningless
+// import timestamp, so when we know the file's real commit date we show that
+// instead — with the date (en-US), since it can be days old. Live server
 // timestamps stay compact (time only), as before.
 function eventTimeLabel(event) {
-  const commit = commitDate(event);
+  const commit = eventCommitDate(event);
   const value = commit || (event && event.ts);
   if (!value) return "none";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   if (commit) {
-    return date.toLocaleString([], {
+    return date.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
       hour: "2-digit",
@@ -421,37 +423,31 @@ function setEventsData(events) {
     "All actors",
   );
   renderEvents();
-  resolveCommitDates(view.all);
+  resolveEventDates(view.all);
 }
 
-// Resolve referenced commit SHAs to real dates so backfilled rows stop showing
-// the shared import timestamp. SHAs are deduped, cached client- and server-side,
-// and chunked to respect the endpoint's per-request cap; failures fall back to
-// the timestamp already on screen.
-async function resolveCommitDates(events) {
-  const COMMIT_DATES_LIMIT = 200;
-  const shas = [
-    ...new Set(
-      (events || [])
-        .map((e) => e.detail && e.detail.commit)
-        .filter((sha) => sha && !(sha in state.commitDates)),
-    ),
-  ];
-  if (!shas.length) return;
-  let changed = false;
-  for (let i = 0; i < shas.length; i += COMMIT_DATES_LIMIT) {
-    const chunk = shas.slice(i, i + COMMIT_DATES_LIMIT);
-    try {
-      const data = await fetchJson(
-        `/github/commit-dates?shas=${encodeURIComponent(chunk.join(","))}`,
-      );
-      Object.assign(state.commitDates, data.dates || {});
-      changed = true;
-    } catch (_) {
-      // Non-fatal: keep showing the import timestamp for unresolved rows.
-    }
+// Backfilled rows carry a source tag and share one import timestamp; their real
+// time comes from the file's last commit, dated server-side.
+function isBackfilledEvent(event) {
+  const source = String((event.detail && event.detail.source) || "").toLowerCase();
+  return source.includes("pre-server") || source.includes("commit delta");
+}
+
+// Fetch real per-file dates for backfilled events once they appear. The server
+// returns the whole TU-id -> date map in one call (computed from the local
+// decomp clone), so this runs once per session; failures retry on a later load.
+async function resolveEventDates(events) {
+  if (state.eventDatesFetched) return;
+  if (!(events || []).some(isBackfilledEvent)) return;
+  state.eventDatesFetched = true;
+  try {
+    const data = await fetchJson("/events/commit-dates");
+    Object.assign(state.eventDates, data.dates || {});
+    renderEvents();
+  } catch (_) {
+    // Non-fatal: keep the import timestamp, and allow a retry next refresh.
+    state.eventDatesFetched = false;
   }
-  if (changed) renderEvents();
 }
 
 function filteredEvents() {
@@ -491,9 +487,9 @@ function renderEvents() {
     for (const event of slice) {
       const row = div("event-row");
       const timeCell = div("event-cell event-time", eventTimeLabel(event));
-      const resolved = commitDate(event);
+      const resolved = eventCommitDate(event);
       if (resolved) {
-        timeCell.title = `commit date: ${fmtTime(resolved)}`;
+        timeCell.title = `last commit: ${fmtTime(resolved)}`;
       } else if (event.ts) {
         timeCell.title = fmtTime(event.ts);
       }
@@ -1234,7 +1230,9 @@ function renderDetail(d) {
   else if (d.last_actor) facts.appendChild(kv("Last actor", actorNode(d.last_actor)));
   facts.appendChild(kv("Updated", d.updated_at ? `${fmtTime(d.updated_at)} (${relTime(d.updated_at)})` : null));
   if (d.commit) facts.appendChild(kv("Commit", d.commit));
-  const repoPath = destToRepoPath(d.dest_path);
+  // Prefer the server-resolved repo_path: it points at the file that actually
+  // exists (a .h destination is inlined into its .cpp), so the link never 404s.
+  const repoPath = d.repo_path || destToRepoPath(d.dest_path);
   if (repoPath) {
     const a = document.createElement("a");
     a.href = ghBlobUrl(repoPath);

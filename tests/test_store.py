@@ -32,6 +32,33 @@ def make_store(tmp_path) -> WorkStore:
     return store
 
 
+def test_backfilled_event_targets_maps_tu_to_dest(tmp_path):
+    store = make_store(tmp_path)
+    with store.connect() as con:
+        # Two backfilled events (one per source) plus a normal one that must not appear.
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/A.cpp", "JeBobs", "review_pass",
+             json.dumps({"source": "workflow commit delta"})),
+        )
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/B.cpp", "Adriwin", "review_pass",
+             json.dumps({"source": "legacy pre-server attribution"})),
+        )
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/A.cpp", "live", "claim", json.dumps({"lease_seconds": 60})),
+        )
+
+    targets = store.backfilled_event_targets()
+
+    assert targets == {
+        "GameSource/A.cpp": "b5-decomp/src/GameSource/A.cpp",
+        "GameSource/B.cpp": "b5-decomp/src/GameSource/B.cpp",
+    }
+
+
 def test_next_is_dependency_ranked(tmp_path):
     store = make_store(tmp_path)
 
