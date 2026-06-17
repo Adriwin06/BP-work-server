@@ -416,7 +416,8 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         history = decomp.history(dest_path)
         if history:
             login_map = await app.state.github.author_login_map()
-            attr = attribute_commit(history[0], login_map)
+            aliases, _profiles = store.actor_maps()
+            attr = attribute_commit(history[0], login_map, aliases)
             detail["updated_at"] = attr["date"]
             if attr["author"]:
                 detail["completed_by"] = attr["author"]
@@ -439,15 +440,19 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         """Cached GitHub repo info, recent commits, and file tree for the dev branch."""
         return await app.state.github.overview()
 
-    def attribute_commit(commit: dict, login_map: dict[str, str]) -> dict:
+    def attribute_commit(commit: dict, login_map: dict[str, str], aliases: dict[str, str]) -> dict:
         """Turn a raw git commit into display fields, resolving the GitHub login.
 
         Login comes from the API email->login map, falling back to the login
-        embedded in a noreply email, then to None (display the git name).
+        embedded in a noreply email, then to None. Display names are canonical
+        worker usernames when an override/case-insensitive alias exists.
         """
         email = commit.get("email") or ""
         login = login_map.get(email.lower()) or login_from_noreply_email(email)
-        return {"date": commit["date"], "author": login or commit.get("name"), "login": login}
+        raw_author = login or commit.get("name")
+        cleaned = str(raw_author).strip() if raw_author is not None else ""
+        author = aliases.get(cleaned.lower(), cleaned) if cleaned else None
+        return {"date": commit["date"], "author": author, "login": login}
 
     @app.get("/events/file-history")
     async def events_file_history(store: WorkStore = Depends(get_store)) -> dict:
@@ -463,6 +468,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         """
         targets = await asyncio.to_thread(store.backfilled_event_targets)
         login_map = await app.state.github.author_login_map()
+        aliases, _profiles = await asyncio.to_thread(store.actor_maps)
         decomp: DecompRepo = app.state.decomp
 
         def resolve() -> dict[str, list]:
@@ -470,7 +476,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             for tu_id, dest_path in targets.items():
                 commits = decomp.history(dest_path)
                 if commits:
-                    history[tu_id] = [attribute_commit(c, login_map) for c in commits]
+                    history[tu_id] = [attribute_commit(c, login_map, aliases) for c in commits]
             return history
 
         return {"history": await asyncio.to_thread(resolve)}

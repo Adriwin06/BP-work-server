@@ -48,7 +48,7 @@ def test_backfilled_event_targets_maps_tu_to_dest(tmp_path):
         )
         con.execute(
             "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
-            (iso(), "GameSource/A.cpp", "live", "claim", json.dumps({"lease_seconds": 60})),
+            (iso(), "class:Utility", "live", "claim", json.dumps({"lease_seconds": 60})),
         )
 
     targets = store.backfilled_event_targets()
@@ -57,6 +57,65 @@ def test_backfilled_event_targets_maps_tu_to_dest(tmp_path):
         "GameSource/A.cpp": "b5-decomp/src/GameSource/A.cpp",
         "GameSource/B.cpp": "b5-decomp/src/GameSource/B.cpp",
     }
+
+
+def test_backfilled_event_targets_skip_tus_with_reliable_events(tmp_path):
+    store = make_store(tmp_path)
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/A.cpp", "agent", "review_pass",
+             json.dumps({"source": "workflow commit delta"})),
+        )
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/A.cpp", "Adriwin", "claim", json.dumps({"lease_seconds": 60})),
+        )
+
+    assert store.backfilled_event_targets() == {}
+    assert all(
+        event["detail"].get("source") != "workflow commit delta"
+        for event in store.dashboard_state()["recent_events"]
+    )
+
+
+def test_actor_maps_canonicalize_github_and_case_aliases(tmp_path):
+    store = make_store(tmp_path)
+    store.create_worker("Adriwin", github_username="adriwin06")
+    store.create_worker("Derneuere")
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/A.cpp", "adriwin06", "review_pass", "{}"),
+        )
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/B.cpp", "derneuere", "review_pass", "{}"),
+        )
+
+    state = store.dashboard_state()
+
+    names = {agent["name"] for agent in state["agents"]}
+    assert "Adriwin" in names
+    assert "adriwin06" not in names
+    assert "Derneuere" in names
+    assert "derneuere" not in names
+    assert {event["agent"] for event in state["recent_events"]} == {"Adriwin", "Derneuere"}
+
+
+def test_dashboard_hides_lease_housekeeping_events(tmp_path):
+    store = make_store(tmp_path)
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (iso(), "GameSource/A.cpp", "agent", "lease_missing", "{}"),
+        )
+
+    state = store.dashboard_state()
+
+    assert all(event["action"] != "lease_missing" for event in state["recent_events"])
+    detail = store.tu_detail("GameSource/A.cpp")
+    assert detail["last_actor"] is None
 
 
 def test_next_is_dependency_ranked(tmp_path):

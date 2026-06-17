@@ -581,8 +581,31 @@ class WorkStore:
 
     def _registered_agents(self) -> dict[str, dict[str, Any]]:
         with self.users_connect() as con:
-            return {
-                row["username"]: {
+            rows = con.execute(
+                """
+                SELECT username,
+                       MAX(active) AS active,
+                       MAX(is_admin) AS is_admin,
+                       MAX(github_username) AS github_username,
+                       COUNT(*) AS tokens,
+                       MIN(created_at) AS created_at,
+                       MAX(last_seen) AS last_seen
+                FROM worker
+                GROUP BY username
+                ORDER BY lower(username), username
+                """
+            ).fetchall()
+
+        by_key: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            username = (row["username"] or "").strip()
+            if not username:
+                continue
+            key = username.lower()
+            current = by_key.get(key)
+            if current is None:
+                by_key[key] = {
+                    "username": username,
                     "active": bool(row["active"]),
                     "is_admin": bool(row["is_admin"]),
                     "github_username": row["github_username"],
@@ -590,21 +613,27 @@ class WorkStore:
                     "created_at": row["created_at"],
                     "last_seen": row["last_seen"],
                 }
-                for row in con.execute(
-                    """
-                    SELECT username,
-                           MAX(active) AS active,
-                           MAX(is_admin) AS is_admin,
-                           MAX(github_username) AS github_username,
-                           COUNT(*) AS tokens,
-                           MIN(created_at) AS created_at,
-                           MAX(last_seen) AS last_seen
-                    FROM worker
-                    GROUP BY username
-                    ORDER BY username
-                    """
-                )
-            }
+                continue
+
+            if self._prefer_username(username, current["username"]):
+                current["username"] = username
+            current["active"] = bool(current["active"] or row["active"])
+            current["is_admin"] = bool(current["is_admin"] or row["is_admin"])
+            current["github_username"] = current["github_username"] or row["github_username"]
+            current["tokens"] += row["tokens"]
+            if row["created_at"] and (
+                not current["created_at"] or row["created_at"] < current["created_at"]
+            ):
+                current["created_at"] = row["created_at"]
+            if row["last_seen"] and (
+                not current["last_seen"] or row["last_seen"] > current["last_seen"]
+            ):
+                current["last_seen"] = row["last_seen"]
+
+        return {
+            data.pop("username"): data
+            for data in sorted(by_key.values(), key=lambda item: item["username"].lower())
+        }
 
     def revoke_worker(self, token: str) -> bool:
         with self.users_connect() as con:
@@ -674,13 +703,50 @@ class WorkStore:
     # single meaningless commit SHA, so their real time comes from the file's own
     # last commit instead (see decomp.DecompRepo).
     BACKFILLED_SOURCES = ("workflow commit delta", "legacy pre-server attribution")
+    RELIABLE_EVENT_ACTIONS = ("claim", "compiled", "review_pass", "review_fail", "block", "unblock")
+    DASHBOARD_HIDDEN_ACTIONS = ("lease_missing", "lease_expired")
+
+    def actor_maps(
+        self, registered_agents: dict[str, dict[str, Any]] | None = None
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Return ``(alias -> canonical username, canonical username -> GitHub profile)``.
+
+        Worker usernames are the canonical display identity. GitHub usernames and
+        case variants are aliases, so Git-derived rows do not split Adriwin from
+        adriwin06 or Derneuere from derneuere.
+        """
+        registered_agents = registered_agents or self._registered_agents()
+        aliases: dict[str, str] = {}
+        profiles: dict[str, str] = {}
+        for username, data in registered_agents.items():
+            profile = data.get("github_username") or username
+            profiles[username] = profile
+            for alias in (username, data.get("github_username"), profile):
+                cleaned = (alias or "").strip()
+                if cleaned:
+                    aliases.setdefault(cleaned.lower(), username)
+        return aliases, profiles
+
+    def canonical_actor(self, actor: str | None, aliases: dict[str, str] | None = None) -> str | None:
+        if actor is None:
+            return None
+        cleaned = str(actor).strip()
+        if not cleaned:
+            return None
+        if aliases is None:
+            aliases, _profiles = self.actor_maps()
+        return aliases.get(cleaned.lower(), cleaned)
 
     def backfilled_event_targets(self) -> dict[str, str | None]:
         """Map each backfilled event's TU id to its destination file path.
 
         Deduplicated by TU id; used to date those events from the decomp repo.
+        Backfilled placeholders are ignored once the same TU has reliable
+        server workflow events, because those rows already carry the normalized
+        actor and event time.
         """
         placeholders = ",".join("?" for _ in self.BACKFILLED_SOURCES)
+        reliable_placeholders = ",".join("?" for _ in self.RELIABLE_EVENT_ACTIONS)
         with self.connect() as con:
             rows = con.execute(
                 f"""
@@ -689,13 +755,24 @@ class WorkStore:
                 JOIN tu t ON t.id = e.tu_id
                 WHERE e.tu_id IS NOT NULL
                   AND json_extract(e.detail_json, '$.source') IN ({placeholders})
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM event reliable
+                    WHERE reliable.tu_id = e.tu_id
+                      AND reliable.id != e.id
+                      AND reliable.agent IS NOT NULL
+                      AND reliable.action IN ({reliable_placeholders})
+                      AND COALESCE(json_extract(reliable.detail_json, '$.source'), '')
+                        NOT IN ({placeholders})
+                  )
                 """,
-                self.BACKFILLED_SOURCES,
+                (*self.BACKFILLED_SOURCES, *self.RELIABLE_EVENT_ACTIONS, *self.BACKFILLED_SOURCES),
             ).fetchall()
             return {row["tu_id"]: row["dest_path"] for row in rows}
 
     def events(self, after: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         with self.connect() as con:
+            aliases, _profiles = self.actor_maps()
             rows = con.execute(
                 """
                 SELECT id, ts, tu_id, agent, action, detail_json
@@ -711,7 +788,7 @@ class WorkStore:
                     "id": row["id"],
                     "ts": parse_dt(row["ts"]),
                     "tu_id": row["tu_id"],
-                    "agent": row["agent"],
+                    "agent": self.canonical_actor(row["agent"], aliases),
                     "action": row["action"],
                     "detail": json.loads(row["detail_json"] or "{}"),
                 }
@@ -762,69 +839,95 @@ class WorkStore:
                 )
             ]
             self._enrich_tu_items(con, blocked)
+            registered_agents = self._registered_agents()
+            aliases, profiles = self.actor_maps(registered_agents)
+            self._canonicalize_item_actors(active_work, aliases)
+            self._canonicalize_item_actors(blocked, aliases)
             agent_work: dict[str, list[str]] = defaultdict(list)
             for item in active_work:
                 if item["owner"]:
                     agent_work[item["owner"]].append(item["id"])
-            completed_by_agent = {
-                row["agent"]: row["completed"]
-                for row in con.execute(
-                    """
-                    SELECT agent, COUNT(DISTINCT tu_id) AS completed
-                    FROM event
-                    WHERE agent IS NOT NULL AND action='review_pass' AND tu_id IS NOT NULL
-                    GROUP BY agent
-                    """
+            completed_by_agent: dict[str, int] = defaultdict(int)
+            for row in con.execute(
+                """
+                SELECT agent, COUNT(DISTINCT tu_id) AS completed
+                FROM event
+                WHERE agent IS NOT NULL AND action='review_pass' AND tu_id IS NOT NULL
+                GROUP BY agent
+                """
+            ):
+                actor = self.canonical_actor(row["agent"], aliases)
+                if actor:
+                    completed_by_agent[actor] += row["completed"]
+            completed_funcs_by_agent: dict[str, int] = defaultdict(int)
+            for row in con.execute(
+                """
+                SELECT completed_by, COUNT(*) AS completed
+                FROM func
+                WHERE completed_by IS NOT NULL AND status!='todo'
+                GROUP BY completed_by
+                """
+            ):
+                actor = self.canonical_actor(row["completed_by"], aliases)
+                if actor:
+                    completed_funcs_by_agent[actor] += row["completed"]
+            last_activity_by_agent: dict[str, str] = {}
+            for row in con.execute(
+                """
+                SELECT agent, MAX(ts) AS last_activity
+                FROM event
+                WHERE agent IS NOT NULL
+                GROUP BY agent
+                """
+            ):
+                actor = self.canonical_actor(row["agent"], aliases)
+                if actor and (
+                    actor not in last_activity_by_agent
+                    or row["last_activity"] > last_activity_by_agent[actor]
+                ):
+                    last_activity_by_agent[actor] = row["last_activity"]
+            active_agents: dict[str, dict[str, Any]] = {}
+            for row in con.execute(
+                """
+                SELECT owner,
+                       SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS in_progress,
+                       0 AS compiled,
+                       COUNT(*) AS total,
+                       MAX(lease_expires_at) AS lease_expires_at,
+                       MAX(updated_at) AS last_update
+                FROM tu
+                WHERE owner IS NOT NULL
+                  AND status='in_progress'
+                  AND lease_expires_at IS NOT NULL
+                GROUP BY owner
+                ORDER BY total DESC, owner
+                """
+            ):
+                owner = self.canonical_actor(row["owner"], aliases)
+                if not owner:
+                    continue
+                current = active_agents.setdefault(
+                    owner,
+                    {
+                        "in_progress": 0,
+                        "compiled": 0,
+                        "total": 0,
+                        "lease_expires_at": None,
+                        "last_update": None,
+                    },
                 )
-            }
-            completed_funcs_by_agent = {
-                row["completed_by"]: row["completed"]
-                for row in con.execute(
-                    """
-                    SELECT completed_by, COUNT(*) AS completed
-                    FROM func
-                    WHERE completed_by IS NOT NULL AND status!='todo'
-                    GROUP BY completed_by
-                    """
-                )
-            }
-            last_activity_by_agent = {
-                row["agent"]: row["last_activity"]
-                for row in con.execute(
-                    """
-                    SELECT agent, MAX(ts) AS last_activity
-                    FROM event
-                    WHERE agent IS NOT NULL
-                    GROUP BY agent
-                    """
-                )
-            }
-            active_agents = {
-                row["owner"]: {
-                    "in_progress": row["in_progress"],
-                    "compiled": row["compiled"],
-                    "total": row["total"],
-                    "lease_expires_at": row["lease_expires_at"],
-                    "last_update": row["last_update"],
-                }
-                for row in con.execute(
-                    """
-                    SELECT owner,
-                           SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS in_progress,
-                           0 AS compiled,
-                           COUNT(*) AS total,
-                           MAX(lease_expires_at) AS lease_expires_at,
-                           MAX(updated_at) AS last_update
-                    FROM tu
-                    WHERE owner IS NOT NULL
-                      AND status='in_progress'
-                      AND lease_expires_at IS NOT NULL
-                    GROUP BY owner
-                    ORDER BY total DESC, owner
-                    """
-                )
-            }
-            registered_agents = self._registered_agents()
+                current["in_progress"] += row["in_progress"]
+                current["compiled"] += row["compiled"]
+                current["total"] += row["total"]
+                if row["lease_expires_at"] and (
+                    not current["lease_expires_at"]
+                    or row["lease_expires_at"] > current["lease_expires_at"]
+                ):
+                    current["lease_expires_at"] = row["lease_expires_at"]
+                if row["last_update"] and (
+                    not current["last_update"] or row["last_update"] > current["last_update"]
+                ):
+                    current["last_update"] = row["last_update"]
             agent_names = (
                 set(registered_agents)
                 | set(active_agents)
@@ -905,10 +1008,7 @@ class WorkStore:
                     "func_percent": self._percent(done_funcs, total_funcs),
                 },
                 "agents": agents,
-                "actor_profiles": {
-                    name: data.get("github_username") or name
-                    for name, data in registered_agents.items()
-                },
+                "actor_profiles": profiles,
                 "active_work": active_work,
                 "blocked": blocked,
                 "recent_events": recent_events,
@@ -1012,6 +1112,8 @@ class WorkStore:
                 ).fetchall()
                 items = [self._dashboard_tu(row) for row in rows]
                 self._enrich_tu_items(con, items)
+                aliases, _profiles = self.actor_maps()
+                self._canonicalize_item_actors(items, aliases)
                 return {"total": total, "limit": limit, "offset": offset, "items": items}
 
             rows = con.execute(
@@ -1057,6 +1159,8 @@ class WorkStore:
             total = len(items)
             page = items[offset : offset + limit]
             self._enrich_tu_items(con, page)
+            aliases, _profiles = self.actor_maps()
+            self._canonicalize_item_actors(page, aliases)
             return {"total": total, "limit": limit, "offset": offset, "items": page}
 
     def tu_detail(self, tu_id: str) -> dict[str, Any]:
@@ -1115,6 +1219,10 @@ class WorkStore:
                 )
             ]
             self._enrich_tu_items(con, [detail])
+            aliases, _profiles = self.actor_maps()
+            self._canonicalize_item_actors([detail], aliases)
+            for func in detail["funcs"]:
+                func["completed_by"] = self.canonical_actor(func["completed_by"], aliases)
             return detail
 
     def search_funcs(
@@ -1163,6 +1271,9 @@ class WorkStore:
                 }
                 for r in rows
             ]
+            aliases, _profiles = self.actor_maps()
+            for item in items:
+                item["completed_by"] = self.canonical_actor(item["completed_by"], aliases)
             return {"total": total, "limit": limit, "offset": offset, "items": items}
 
     def _next_tus_from_connection(
@@ -1400,22 +1511,48 @@ class WorkStore:
     def _events_from_connection(
         self, con: sqlite3.Connection, after: int = 0, limit: int = 200
     ) -> list[dict[str, Any]]:
+        aliases, _profiles = self.actor_maps()
+        backfilled_placeholders = ",".join("?" for _ in self.BACKFILLED_SOURCES)
+        reliable_placeholders = ",".join("?" for _ in self.RELIABLE_EVENT_ACTIONS)
+        hidden_placeholders = ",".join("?" for _ in self.DASHBOARD_HIDDEN_ACTIONS)
         rows = con.execute(
-            """
+            f"""
             SELECT id, ts, tu_id, agent, action, detail_json
             FROM event
             WHERE id > ?
+              AND action NOT IN ({hidden_placeholders})
+              AND NOT (
+                tu_id IS NOT NULL
+                AND json_extract(detail_json, '$.source') IN ({backfilled_placeholders})
+                AND EXISTS (
+                  SELECT 1
+                  FROM event reliable
+                  WHERE reliable.tu_id = event.tu_id
+                    AND reliable.id != event.id
+                    AND reliable.agent IS NOT NULL
+                    AND reliable.action IN ({reliable_placeholders})
+                    AND COALESCE(json_extract(reliable.detail_json, '$.source'), '')
+                      NOT IN ({backfilled_placeholders})
+                )
+              )
             ORDER BY id DESC
             LIMIT ?
             """,
-            (after, limit),
+            (
+                after,
+                *self.DASHBOARD_HIDDEN_ACTIONS,
+                *self.BACKFILLED_SOURCES,
+                *self.RELIABLE_EVENT_ACTIONS,
+                *self.BACKFILLED_SOURCES,
+                limit,
+            ),
         ).fetchall()
         return [
             {
                 "id": row["id"],
                 "ts": row["ts"],
                 "tu_id": row["tu_id"],
-                "agent": row["agent"],
+                "agent": self.canonical_actor(row["agent"], aliases),
                 "action": row["action"],
                 "detail": json.loads(row["detail_json"] or "{}"),
             }
@@ -1450,6 +1587,7 @@ class WorkStore:
             return
         by_id = {item["id"]: item for item in items}
         placeholders = ",".join("?" for _ in ids)
+        hidden_placeholders = ",".join("?" for _ in self.DASHBOARD_HIDDEN_ACTIONS)
 
         for item in items:
             item.setdefault("total_deps", 0)
@@ -1485,11 +1623,13 @@ class WorkStore:
             JOIN (
               SELECT tu_id, MAX(id) AS max_id
               FROM event
-              WHERE tu_id IN ({placeholders}) AND agent IS NOT NULL
+              WHERE tu_id IN ({placeholders})
+                AND agent IS NOT NULL
+                AND action NOT IN ({hidden_placeholders})
               GROUP BY tu_id
             ) latest ON latest.max_id=e.id
             """,
-            ids,
+            [*ids, *self.DASHBOARD_HIDDEN_ACTIONS],
         ):
             item = by_id.get(row["tu_id"])
             if item is not None:
@@ -1516,6 +1656,22 @@ class WorkStore:
             if item is not None:
                 item["completed_by"] = row["agent"]
                 item["completed_at"] = row["ts"]
+
+    def _canonicalize_item_actors(self, items: list[dict[str, Any]], aliases: dict[str, str]) -> None:
+        for item in items:
+            for key in ("owner", "last_actor", "completed_by"):
+                item[key] = self.canonical_actor(item.get(key), aliases)
+
+    def _prefer_username(self, candidate: str, current: str) -> bool:
+        """Pick a display spelling when worker rows only differ by case."""
+        return self._username_score(candidate) > self._username_score(current)
+
+    def _username_score(self, username: str) -> tuple[int, int, int]:
+        return (
+            int(any(ch.isupper() for ch in username)),
+            int(username[:1].isupper()),
+            -sum(1 for ch in username if ch.isupper()),
+        )
 
     def _percent(self, value: int, total: int) -> float:
         if total <= 0:

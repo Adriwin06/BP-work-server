@@ -115,6 +115,45 @@ def test_dashboard_lists_registered_agents_without_claims(tmp_path):
     }
 
 
+def test_file_history_uses_registered_actor_aliases(tmp_path):
+    client, store = make_client(tmp_path)
+    store.create_worker("Adriwin", github_username="Adriwin06")
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (
+                iso(),
+                "GameSource/A.cpp",
+                "agent",
+                "review_pass",
+                '{"source": "legacy pre-server attribution"}',
+            ),
+        )
+
+    class FakeGitHub:
+        async def author_login_map(self):
+            return {"adriwin@example.test": "Adriwin06"}
+
+    class FakeDecomp:
+        def history(self, dest_path):
+            assert dest_path == "b5-decomp/src/GameSource/A.cpp"
+            return [
+                {
+                    "date": "2026-06-12T10:00:00+00:00",
+                    "name": "agent",
+                    "email": "adriwin@example.test",
+                }
+            ]
+
+    client.app.state.github = FakeGitHub()
+    client.app.state.decomp = FakeDecomp()
+
+    history = client.get("/events/file-history").json()["history"]
+
+    assert history["GameSource/A.cpp"][0]["author"] == "Adriwin"
+    assert history["GameSource/A.cpp"][0]["login"] == "Adriwin06"
+
+
 def test_dashboard_expires_lease_less_in_progress_work(tmp_path):
     client, store = make_client(tmp_path)
     with store.connect() as con:

@@ -87,22 +87,13 @@ function shortTime(value) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-// Label for the Live Events "Time" column. Reconstructed rows carry a real
-// commit date that can be days old, so they show the date (en-US). Live server
-// events stay compact (time only), as before.
+// Label for the Live Events "Time" column. All event sources use the same
+// compact label; the full date remains available in the title.
 function eventTimeLabel(event) {
   const value = event && event.ts;
   if (!value) return "none";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  if (event.reconstructed) {
-    return date.toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
   return shortTime(value);
 }
 
@@ -414,12 +405,16 @@ function isBackfilledEvent(event) {
 // file has no resolved history are kept as-is (and sink via eventSortTime).
 function expandEvents(events) {
   const out = [];
+  const reconstructed = new Set();
   for (const event of events || []) {
     const history = isBackfilledEvent(event) ? state.eventHistory[event.tu_id] : null;
     if (history && history.length) {
       for (const commit of history) {
+        const key = [event.tu_id, event.action, commit.date, commit.author].join("\x1f");
+        if (reconstructed.has(key)) continue;
+        reconstructed.add(key);
         out.push({
-          id: 0,
+          id: event.id || 0,
           ts: commit.date,
           tu_id: event.tu_id,
           agent: commit.author,
