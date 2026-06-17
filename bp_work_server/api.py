@@ -404,11 +404,20 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             detail = store.tu_detail(id)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        decomp: DecompRepo = app.state.decomp
+        dest_path = detail.get("dest_path")
         # Headers are inlined into the .cpp, so a .h destination has no file of
         # its own; expose the path that actually exists so the UI links there.
-        repo_path = app.state.decomp.repo_path(detail.get("dest_path"))
+        repo_path = decomp.repo_path(dest_path)
         if repo_path:
             detail["repo_path"] = repo_path
+        # The committed file is the real record: show its last commit's date and
+        # author rather than the backfilled import time / guessed completer.
+        history = decomp.history(dest_path)
+        if history:
+            detail["updated_at"] = history[0]["date"]
+            if history[0]["author"]:
+                detail["completed_by"] = history[0]["author"]
         return detail
 
     @app.get("/api/funcs")
@@ -427,28 +436,30 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         """Cached GitHub repo info, recent commits, and file tree for the dev branch."""
         return await app.state.github.overview()
 
-    @app.get("/events/commit-dates")
-    async def events_commit_dates(store: WorkStore = Depends(get_store)) -> dict:
-        """Real dates for backfilled Live Events, keyed by TU id.
+    @app.get("/events/file-history")
+    async def events_file_history(store: WorkStore = Depends(get_store)) -> dict:
+        """Per-file commit history for backfilled Live Events, keyed by TU id.
 
         Those rows ("workflow commit delta" / "legacy pre-server attribution")
-        all share one import timestamp and one meaningless commit SHA, so we date
-        each instead by the last commit that touched its destination file in the
-        local decomp clone. Files that cannot be located are simply omitted, and
-        the dashboard keeps the stored timestamp for them.
+        share one import timestamp, one meaningless commit SHA, and a guessed
+        author. The truth is each file's own commit history, so we return every
+        commit (2026+) that touched the TU's destination file -- author and date
+        -- and the dashboard expands each backfilled row into one event per
+        commit. TUs whose file has no qualifying commits are omitted; the
+        dashboard keeps the original row for them.
         """
         targets = await asyncio.to_thread(store.backfilled_event_targets)
         decomp: DecompRepo = app.state.decomp
 
-        def resolve() -> dict[str, str]:
-            dates: dict[str, str] = {}
+        def resolve() -> dict[str, list]:
+            history: dict[str, list] = {}
             for tu_id, dest_path in targets.items():
-                date = decomp.commit_date(dest_path)
-                if date:
-                    dates[tu_id] = date
-            return dates
+                commits = decomp.history(dest_path)
+                if commits:
+                    history[tu_id] = commits
+            return history
 
-        return {"dates": await asyncio.to_thread(resolve)}
+        return {"history": await asyncio.to_thread(resolve)}
 
     @app.get("/events/stream")
     async def event_stream(

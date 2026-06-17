@@ -28,9 +28,18 @@ DEFAULT_DECOMP_ROOT = "/var/lib/bp-work-server/b5-decomp"
 DEFAULT_DECOMP_BRANCH = os.environ.get("BP_GITHUB_REF", "dev")
 
 # How long the local clone is trusted before we fetch the branch again. New
-# decomp commits only shift a file's "latest commit" date, so staleness here is
-# cosmetic; a generous TTL keeps git fetch out of the hot path.
+# decomp commits only add to a file's history, so staleness here is cosmetic; a
+# generous TTL keeps git fetch out of the hot path.
 REFRESH_TTL = 900
+
+# Only commits from this year onward count: the workflow (and this server's
+# attribution) began in 2026, so earlier commits belong to the abandoned
+# pre-workflow decomp and must not be reconstructed as Live Events.
+MIN_COMMIT_YEAR = int(os.environ.get("BP_DECOMP_MIN_YEAR", "2026"))
+
+# Field separator for ``git log`` output; ASCII unit separator never appears in
+# author names or ISO dates, so it parses unambiguously.
+_FIELD_SEP = "\x1f"
 
 # Destination paths are stored as "b5-decomp/src/...": the repo-name prefix is
 # stripped to get the path relative to the clone root.
@@ -38,12 +47,18 @@ _REPO_PREFIX = "b5-decomp/"
 
 
 class DecompRepo:
-    """Resolves TU destination paths to the real file and its last commit date.
+    """Reads per-file commit history from a local clone of the decomp source.
+
+    A TU's destination file is the honest record of who did the work and when:
+    each commit that touched it (from MIN_COMMIT_YEAR on) is one unit of work by
+    its author on its date. ``history`` exposes that list; ``resolve`` and the
+    thin wrappers expose the existing path and the latest commit for callers that
+    only need a single date or link.
 
     All public methods are safe to call from FastAPI's threadpool: results are
-    memoised under a lock and ``git`` is shelled out synchronously. Every method
-    degrades to ``None`` when the clone is missing or git fails, so the dashboard
-    simply falls back to the stored event timestamp.
+    memoised under a lock and ``git`` is shelled out synchronously. Everything
+    degrades to empty/None when the clone is missing or git fails, so the
+    dashboard simply falls back to stored data.
     """
 
     def __init__(
@@ -54,8 +69,8 @@ class DecompRepo:
         self.root = Path(root or os.environ.get("BP_DECOMP_ROOT", DEFAULT_DECOMP_ROOT))
         self.branch = branch or os.environ.get("BP_DECOMP_BRANCH", DEFAULT_DECOMP_BRANCH)
         self._lock = threading.Lock()
-        # path-relative-to-root -> (existing_path | None, iso_date | None)
-        self._cache: dict[str, tuple[str | None, str | None]] = {}
+        # path-relative-to-root -> {"path": existing_path|None, "history": [...]}
+        self._cache: dict[str, dict] = {}
         self._refreshed_at = 0.0
 
     @property
@@ -100,40 +115,67 @@ class DecompRepo:
         path = dest_path.removeprefix(_REPO_PREFIX)
         return path.lstrip("/")
 
-    def _resolve_uncached(self, rel: str) -> tuple[str | None, str | None]:
+    def _existing_path(self, rel: str) -> str | None:
+        """The file that exists for ``rel`` (a missing *.h maps to its .cpp)."""
         candidates = [rel]
-        # Headers are inlined into the .cpp, so a missing *.h maps to its sibling.
+        # Headers are inlined into the .cpp, so a missing *.h has no file of its own.
         if rel.endswith(".h"):
             candidates.append(rel[:-2] + ".cpp")
         for candidate in candidates:
-            if not (self.root / candidate).is_file():
+            if (self.root / candidate).is_file():
+                return candidate
+        return None
+
+    def _resolve_uncached(self, rel: str) -> dict:
+        path = self._existing_path(rel)
+        if not path:
+            return {"path": None, "history": []}
+        out = self._git("log", f"--format=%aI{_FIELD_SEP}%an", "--", path)
+        history: list[dict[str, str | None]] = []
+        for line in (out or "").splitlines():
+            date, _, author = line.strip().partition(_FIELD_SEP)
+            if len(date) < 4 or not date[:4].isdigit():
                 continue
-            out = self._git("log", "-1", "--format=%aI", "--", candidate)
-            date = (out or "").strip() or None
-            return candidate, date
-        return None, None
+            if int(date[:4]) < MIN_COMMIT_YEAR:
+                continue
+            history.append({"date": date, "author": author.strip() or None})
+        # git log is newest-first, which is the order we want.
+        return {"path": path, "history": history}
 
-    def resolve(self, dest_path: str | None) -> tuple[str | None, str | None]:
-        """Map a TU destination to ``(existing_repo_path, iso_commit_date)``.
-
-        Both elements are ``None`` when the file cannot be located. The path is
-        relative to the repo root (e.g. ``src/.../Foo.cpp``).
-        """
+    def _record(self, dest_path: str | None) -> dict:
         if not dest_path:
-            return None, None
+            return {"path": None, "history": []}
         self._maybe_refresh()
         rel = self._repo_relative(dest_path)
         with self._lock:
             hit = self._cache.get(rel)
         if hit is not None:
             return hit
-        result = self._resolve_uncached(rel)
+        record = self._resolve_uncached(rel)
         with self._lock:
-            self._cache[rel] = result
-        return result
+            self._cache[rel] = record
+        return record
+
+    def history(self, dest_path: str | None) -> list[dict[str, str | None]]:
+        """Commits (newest-first) that touched the file, from MIN_COMMIT_YEAR on.
+
+        Each entry is ``{"date": iso, "author": name}``; empty when the file is
+        absent or has no qualifying commits.
+        """
+        return self._record(dest_path)["history"]
+
+    def resolve(self, dest_path: str | None) -> tuple[str | None, str | None]:
+        """Map a TU destination to ``(existing_repo_path, latest_commit_date)``."""
+        record = self._record(dest_path)
+        history = record["history"]
+        return record["path"], (history[0]["date"] if history else None)
 
     def commit_date(self, dest_path: str | None) -> str | None:
         return self.resolve(dest_path)[1]
 
+    def last_author(self, dest_path: str | None) -> str | None:
+        history = self._record(dest_path)["history"]
+        return history[0]["author"] if history else None
+
     def repo_path(self, dest_path: str | None) -> str | None:
-        return self.resolve(dest_path)[0]
+        return self._record(dest_path)["path"]

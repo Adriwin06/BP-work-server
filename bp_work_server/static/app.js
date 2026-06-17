@@ -26,10 +26,13 @@ const state = {
   // the dashboard payload carries the full lists; we filter/search/page here.
   eventsView: { all: [], q: "", action: "", actor: "", page: 1, perPage: 50, searchTimer: null },
   queueView: { all: [], q: "", source: "", page: 1, perPage: 50, searchTimer: null },
-  // TU id -> real date for backfilled events. Those share one import timestamp;
-  // their real time is the last commit that touched the TU's destination file.
-  eventDates: {},
-  eventDatesFetched: false,
+  // Live Events reconstruction. Backfilled rows share one import timestamp, one
+  // bogus commit, and a guessed author; we replace each with one event per real
+  // commit (2026+) that touched the file. rawEvents is the unexpanded payload;
+  // eventHistory maps TU id -> [{date, author}, ...].
+  rawEvents: [],
+  eventHistory: {},
+  eventHistoryFetched: false,
 };
 
 /* Build a github.com/blob URL for a path inside the mirrored repo. */
@@ -84,24 +87,15 @@ function shortTime(value) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-// Real date for a backfilled event: the last commit that touched its TU's
-// destination file, resolved server-side and keyed by TU id.
-function eventCommitDate(event) {
-  const tuId = event && event.tu_id;
-  return tuId ? state.eventDates[tuId] || null : null;
-}
-
-// Label for the Live Events "Time" column. Backfilled rows share one meaningless
-// import timestamp, so when we know the file's real commit date we show that
-// instead — with the date (en-US), since it can be days old. Live server
-// timestamps stay compact (time only), as before.
+// Label for the Live Events "Time" column. Reconstructed rows carry a real
+// commit date that can be days old, so they show the date (en-US). Live server
+// events stay compact (time only), as before.
 function eventTimeLabel(event) {
-  const commit = eventCommitDate(event);
-  const value = commit || (event && event.ts);
+  const value = event && event.ts;
   if (!value) return "none";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  if (commit) {
+  if (event.reconstructed) {
     return date.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
@@ -208,6 +202,8 @@ function tuButton(tuId, className = "tu-name") {
 function detailText(detail) {
   if (!detail || !Object.keys(detail).length) return "";
   return Object.entries(detail)
+    // The stored commit SHA is the bogus backfill one; never surface it.
+    .filter(([key]) => key !== "commit")
     .filter(([, value]) => value !== null && value !== "" && value !== undefined)
     .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : value}`)
     .join(" | ");
@@ -396,26 +392,63 @@ function renderQueue() {
 
 /* ---------------- Live Events (client-side filter / search / pager) ---------------- */
 
-// Epoch millis used to order the list, newest first. Backfilled rows sort by
-// their real (file-commit) date once resolved; until then — or when the file
-// cannot be dated — they sink to the bottom rather than floating up on the
-// shared, meaningless import timestamp. Real events sort by their server ts.
+// Epoch millis used to order the list, newest first. Reconstructed and live
+// events sort by their real timestamp; any leftover backfilled row we could not
+// reconstruct sinks to the bottom instead of floating up on its meaningless
+// shared import timestamp.
 function eventSortTime(event) {
-  const commit = eventCommitDate(event);
-  if (commit) return new Date(commit).getTime();
   if (isBackfilledEvent(event)) return -Infinity;
   const t = event.ts ? new Date(event.ts).getTime() : NaN;
   return Number.isNaN(t) ? -Infinity : t;
 }
 
-function setEventsData(events) {
-  const view = state.eventsView;
+// Backfilled rows carry a source tag; they are placeholders to be replaced by
+// one reconstructed event per real commit (see expandEvents).
+function isBackfilledEvent(event) {
+  const source = String((event.detail && event.detail.source) || "").toLowerCase();
+  return source.includes("pre-server") || source.includes("commit delta");
+}
+
+// Replace each backfilled row with one event per real commit (2026+) on its
+// file: the commit's author and date, no bogus commit/source detail. Rows whose
+// file has no resolved history are kept as-is (and sink via eventSortTime).
+function expandEvents(events) {
+  const out = [];
   for (const event of events || []) {
+    const history = isBackfilledEvent(event) ? state.eventHistory[event.tu_id] : null;
+    if (history && history.length) {
+      for (const commit of history) {
+        out.push({
+          id: 0,
+          ts: commit.date,
+          tu_id: event.tu_id,
+          agent: commit.author,
+          action: event.action,
+          detail: {},
+          reconstructed: true,
+        });
+      }
+    } else {
+      out.push(event);
+    }
+  }
+  return out;
+}
+
+function setEventsData(events) {
+  state.rawEvents = events || [];
+  for (const event of state.rawEvents) {
     state.lastEventId = Math.max(state.lastEventId, event.id || 0);
   }
-  // Stored as received; renderEvents orders by effective date (it re-runs once
-  // the backfilled rows' real dates resolve).
-  view.all = [...(events || [])];
+  rebuildEvents();
+  resolveEventHistory();
+}
+
+// Build the view list from the raw payload plus whatever history we have, then
+// render. Re-run whenever new history arrives so the expansion updates in place.
+function rebuildEvents() {
+  const view = state.eventsView;
+  view.all = expandEvents(state.rawEvents);
   fillSelect(
     "eventsFilterAction",
     [...new Set(view.all.map((e) => e.action).filter(Boolean))].sort(),
@@ -427,30 +460,22 @@ function setEventsData(events) {
     "All actors",
   );
   renderEvents();
-  resolveEventDates(view.all);
 }
 
-// Backfilled rows carry a source tag and share one import timestamp; their real
-// time comes from the file's last commit, dated server-side.
-function isBackfilledEvent(event) {
-  const source = String((event.detail && event.detail.source) || "").toLowerCase();
-  return source.includes("pre-server") || source.includes("commit delta");
-}
-
-// Fetch real per-file dates for backfilled events once they appear. The server
-// returns the whole TU-id -> date map in one call (computed from the local
-// decomp clone), so this runs once per session; failures retry on a later load.
-async function resolveEventDates(events) {
-  if (state.eventDatesFetched) return;
-  if (!(events || []).some(isBackfilledEvent)) return;
-  state.eventDatesFetched = true;
+// Fetch per-file commit history once backfilled rows appear. One call returns
+// the whole TU-id -> commits map (computed from the local decomp clone), so this
+// runs once per session; failures retry on a later refresh.
+async function resolveEventHistory() {
+  if (state.eventHistoryFetched) return;
+  if (!state.rawEvents.some(isBackfilledEvent)) return;
+  state.eventHistoryFetched = true;
   try {
-    const data = await fetchJson("/events/commit-dates");
-    Object.assign(state.eventDates, data.dates || {});
-    renderEvents();
+    const data = await fetchJson("/events/file-history");
+    Object.assign(state.eventHistory, data.history || {});
+    rebuildEvents();
   } catch (_) {
-    // Non-fatal: keep the import timestamp, and allow a retry next refresh.
-    state.eventDatesFetched = false;
+    // Non-fatal: keep the original rows, and allow a retry next refresh.
+    state.eventHistoryFetched = false;
   }
 }
 
@@ -494,11 +519,10 @@ function renderEvents() {
     for (const event of slice) {
       const row = div("event-row");
       const timeCell = div("event-cell event-time", eventTimeLabel(event));
-      const resolved = eventCommitDate(event);
-      if (resolved) {
-        timeCell.title = `last commit: ${fmtTime(resolved)}`;
-      } else if (event.ts) {
-        timeCell.title = fmtTime(event.ts);
+      if (event.ts) {
+        timeCell.title = event.reconstructed
+          ? `commit date: ${fmtTime(event.ts)}`
+          : fmtTime(event.ts);
       }
       row.appendChild(timeCell);
       row.appendChild(div("event-cell event-action", event.action || "event"));
@@ -1236,7 +1260,6 @@ function renderDetail(d) {
   if (d.completed_by) facts.appendChild(kv("Completed by", actorNode(d.completed_by)));
   else if (d.last_actor) facts.appendChild(kv("Last actor", actorNode(d.last_actor)));
   facts.appendChild(kv("Updated", d.updated_at ? `${fmtTime(d.updated_at)} (${relTime(d.updated_at)})` : null));
-  if (d.commit) facts.appendChild(kv("Commit", d.commit));
   // Prefer the server-resolved repo_path: it points at the file that actually
   // exists (a .h destination is inlined into its .cpp), so the link never 404s.
   const repoPath = d.repo_path || destToRepoPath(d.dest_path);
