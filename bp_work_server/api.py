@@ -370,8 +370,39 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     def facets(store: WorkStore = Depends(get_store)) -> dict:
         return store.facets()
 
+    async def file_attrs(dest_paths: set[str]) -> dict[str, dict]:
+        if not dest_paths:
+            return {}
+        decomp: DecompRepo = app.state.decomp
+
+        def resolve_histories() -> dict[str, dict]:
+            histories: dict[str, dict] = {}
+            for dest_path in dest_paths:
+                history = decomp.history(dest_path)
+                if history:
+                    histories[dest_path] = history[0]
+            return histories
+
+        histories = await asyncio.to_thread(resolve_histories)
+        if not histories:
+            return {}
+
+        login_map = await app.state.github.author_login_map()
+        aliases, _profiles = await asyncio.to_thread(app.state.store.actor_maps)
+        return {
+            dest_path: attribute_commit(commit, login_map, aliases)
+            for dest_path, commit in histories.items()
+        }
+
+    def apply_tu_file_attr(item: dict, attr: dict | None) -> None:
+        if not attr or not attr.get("author"):
+            return
+        item["updated_at"] = attr["date"]
+        item["completed_by"] = attr["author"]
+        item["completed_by_login"] = attr["login"]
+
     @app.get("/api/tus")
-    def search_tus(
+    async def search_tus(
         q: str | None = Query(None),
         status: list[str] | None = Query(None),
         source: str | None = Query(None),
@@ -383,17 +414,21 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
         store: WorkStore = Depends(get_store),
     ) -> dict:
-        return store.search_tus(
-            q=q,
-            statuses=status,
-            source=source,
-            goal=goal,
-            owner=owner,
-            sort=sort,
-            order=order,
-            limit=limit,
-            offset=offset,
+        result = await asyncio.to_thread(
+            store.search_tus,
+            q=q, statuses=status, source=source, goal=goal, owner=owner,
+            sort=sort, order=order, limit=limit, offset=offset,
         )
+        items = result.get("items") or []
+        dest_paths = {
+            item.get("dest_path")
+            for item in items
+            if item.get("dest_path") and item.get("status") in {"done", "compiled"}
+        }
+        attrs_by_dest = await file_attrs(dest_paths)
+        for item in items:
+            apply_tu_file_attr(item, attrs_by_dest.get(item.get("dest_path")))
+        return result
 
     @app.get("/api/tu")
     async def tu_detail(
@@ -413,19 +448,19 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             detail["repo_path"] = repo_path
         # The committed file is the real record: show its last commit's date and
         # author rather than the backfilled import time / guessed completer.
-        history = decomp.history(dest_path)
-        if history:
-            login_map = await app.state.github.author_login_map()
-            aliases, _profiles = store.actor_maps()
-            attr = attribute_commit(history[0], login_map, aliases)
-            detail["updated_at"] = attr["date"]
-            if attr["author"]:
-                detail["completed_by"] = attr["author"]
-                detail["completed_by_login"] = attr["login"]
+        attrs_by_dest = await file_attrs({dest_path} if dest_path else set())
+        attr = attrs_by_dest.get(dest_path)
+        apply_tu_file_attr(detail, attr)
+        if attr and attr.get("author"):
+            for func in detail.get("funcs", []):
+                if func.get("status") != "todo":
+                    func["completed_by"] = attr["author"]
+                    func["completed_by_login"] = attr["login"]
+                    func["completed_at"] = attr["date"]
         return detail
 
     @app.get("/api/funcs")
-    def search_funcs(
+    async def search_funcs(
         q: str | None = Query(None),
         status: list[str] | None = Query(None),
         tu: str | None = Query(None),
@@ -433,7 +468,19 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
         store: WorkStore = Depends(get_store),
     ) -> dict:
-        return store.search_funcs(q=q, statuses=status, tu=tu, limit=limit, offset=offset)
+        result = await asyncio.to_thread(
+            store.search_funcs, q=q, statuses=status, tu=tu, limit=limit, offset=offset
+        )
+        items = result.get("items") or []
+        dest_paths = {item.get("tu_dest_path") for item in items if item.get("tu_dest_path")}
+        attrs_by_dest = await file_attrs(dest_paths)
+        for item in items:
+            attr = attrs_by_dest.get(item.get("tu_dest_path"))
+            if attr and attr.get("author"):
+                item["completed_by"] = attr["author"]
+                item["completed_by_login"] = attr["login"]
+                item["completed_at"] = attr["date"]
+        return result
 
     @app.get("/github/overview")
     async def github_overview() -> dict:
@@ -449,9 +496,18 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         """
         email = commit.get("email") or ""
         login = login_map.get(email.lower()) or login_from_noreply_email(email)
-        raw_author = login or commit.get("name")
-        cleaned = str(raw_author).strip() if raw_author is not None else ""
-        author = aliases.get(cleaned.lower(), cleaned) if cleaned else None
+        candidates = [login, email, commit.get("name")]
+        author = None
+        for candidate in candidates:
+            cleaned = str(candidate).strip() if candidate is not None else ""
+            if not cleaned:
+                continue
+            author = aliases.get(cleaned.lower())
+            if author:
+                break
+            if candidate == commit.get("name"):
+                author = cleaned
+                break
         return {"date": commit["date"], "author": author, "login": login}
 
     @app.get("/events/file-history")

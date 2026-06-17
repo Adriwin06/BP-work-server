@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS worker(
 
 CREATE INDEX IF NOT EXISTS ix_worker_username ON worker(username);
 CREATE INDEX IF NOT EXISTS ix_worker_active ON worker(active);
+
+CREATE TABLE IF NOT EXISTS worker_alias(
+  alias TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'manual'
+);
+
+CREATE INDEX IF NOT EXISTS ix_worker_alias_username ON worker_alias(username);
 """
 
 
@@ -725,6 +733,12 @@ class WorkStore:
                 cleaned = (alias or "").strip()
                 if cleaned:
                     aliases.setdefault(cleaned.lower(), username)
+        with self.users_connect() as con:
+            for row in con.execute("SELECT alias, username FROM worker_alias"):
+                cleaned = (row["alias"] or "").strip()
+                canonical = self.canonical_actor(row["username"], aliases)
+                if cleaned and canonical:
+                    aliases[cleaned.lower()] = canonical
         return aliases, profiles
 
     def canonical_actor(self, actor: str | None, aliases: dict[str, str] | None = None) -> str | None:
@@ -1239,24 +1253,27 @@ class WorkStore:
             clauses: list[str] = []
             params: list[Any] = []
             if q:
-                clauses.append("name LIKE ?")
+                clauses.append("f.name LIKE ?")
                 params.append(f"%{q}%")
             if statuses:
                 placeholders = ",".join("?" * len(statuses))
-                clauses.append(f"status IN ({placeholders})")
+                clauses.append(f"f.status IN ({placeholders})")
                 params.extend(statuses)
             if tu:
-                clauses.append("tu_id = ?")
+                clauses.append("f.tu_id = ?")
                 params.append(tu)
             where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
             total = con.execute(
-                f"SELECT COUNT(*) FROM func{where}", params
+                f"SELECT COUNT(*) FROM func f{where}", params
             ).fetchone()[0]
             rows = con.execute(
                 f"""
-                SELECT name, tu_id, status, completed_by, completed_at
-                FROM func{where}
-                ORDER BY name
+                SELECT f.name, f.tu_id, f.status, f.completed_by, f.completed_at,
+                       t.dest_path AS tu_dest_path
+                FROM func f
+                LEFT JOIN tu t ON t.id = f.tu_id
+                {where}
+                ORDER BY f.name
                 LIMIT ? OFFSET ?
                 """,
                 [*params, limit, offset],
@@ -1268,6 +1285,7 @@ class WorkStore:
                     "status": r["status"],
                     "completed_by": r["completed_by"],
                     "completed_at": r["completed_at"],
+                    "tu_dest_path": r["tu_dest_path"],
                 }
                 for r in rows
             ]

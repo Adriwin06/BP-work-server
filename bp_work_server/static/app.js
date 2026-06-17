@@ -1029,7 +1029,7 @@ function renderTuRows(items) {
       owner.appendChild(actorNode(item.owner));
       owner.appendChild(div("tu-meta", "active claim"));
     } else if (item.completed_by) {
-      owner.appendChild(actorNode(item.completed_by));
+      owner.appendChild(actorNode(item.completed_by, item.completed_by_login));
       owner.appendChild(div("tu-meta", "completed"));
     } else if (item.last_actor) {
       owner.appendChild(actorNode(item.last_actor));
@@ -1062,7 +1062,7 @@ function renderFuncRows(items) {
     tu.appendChild(tuButton(item.tu_id, "tu-meta"));
     const actor = document.createElement("td");
     if (item.completed_by) {
-      actor.appendChild(actorNode(item.completed_by));
+      actor.appendChild(actorNode(item.completed_by, item.completed_by_login));
       if (item.completed_at) actor.appendChild(div("tu-meta", relTime(item.completed_at) || fmtTime(item.completed_at)));
     } else {
       actor.textContent = "unattributed";

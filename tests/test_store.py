@@ -103,6 +103,11 @@ def test_actor_maps_canonicalize_github_and_case_aliases(tmp_path):
     store = make_store(tmp_path)
     store.create_worker("Adriwin", github_username="adriwin06")
     store.create_worker("Derneuere")
+    with store.users_connect() as con:
+        con.execute(
+            "INSERT INTO worker_alias(alias, username, kind) VALUES(?, ?, ?)",
+            ("Nathan V.", "Derneuere", "git-name"),
+        )
     with store.connect() as con:
         con.execute(
             "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
@@ -120,6 +125,7 @@ def test_actor_maps_canonicalize_github_and_case_aliases(tmp_path):
     assert "adriwin06" not in names
     assert "Derneuere" in names
     assert "derneuere" not in names
+    assert store.canonical_actor("Nathan V.") == "Derneuere"
     assert {event["agent"] for event in state["recent_events"]} == {"Adriwin", "Derneuere"}
 
 

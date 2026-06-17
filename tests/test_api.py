@@ -135,6 +135,9 @@ def test_file_history_uses_registered_actor_aliases(tmp_path):
             return {"adriwin@example.test": "Adriwin06"}
 
     class FakeDecomp:
+        def repo_path(self, dest_path):
+            return dest_path.removeprefix("b5-decomp/")
+
         def history(self, dest_path):
             assert dest_path == "b5-decomp/src/GameSource/A.cpp"
             return [
@@ -152,6 +155,64 @@ def test_file_history_uses_registered_actor_aliases(tmp_path):
 
     assert history["GameSource/A.cpp"][0]["author"] == "Adriwin"
     assert history["GameSource/A.cpp"][0]["login"] == "Adriwin06"
+
+
+def test_function_search_uses_file_attribution_like_detail_drawer(tmp_path):
+    client, store = make_client(tmp_path)
+    store.create_worker("JeBobs")
+    with store.users_connect() as con:
+        con.execute(
+            "INSERT INTO worker_alias(alias, username, kind) VALUES(?, ?, ?)",
+            ("jebcraftserver@gmail.com", "JeBobs", "git-email"),
+        )
+        con.execute(
+            "INSERT INTO worker_alias(alias, username, kind) VALUES(?, ?, ?)",
+            ("Nathan V.", "JeBobs", "git-name"),
+        )
+    with store.connect() as con:
+        con.execute("UPDATE tu SET status='done' WHERE id='GameSource/A.cpp'")
+        con.execute(
+            """
+            UPDATE func
+            SET status='reviewed', completed_by='Adriwin', completed_at=?
+            WHERE name='A::Run'
+            """,
+            (iso(),),
+        )
+
+    class FakeGitHub:
+        async def author_login_map(self):
+            return {}
+
+    class FakeDecomp:
+        def repo_path(self, dest_path):
+            return dest_path.removeprefix("b5-decomp/")
+
+        def history(self, dest_path):
+            assert dest_path == "b5-decomp/src/GameSource/A.cpp"
+            return [
+                {
+                    "date": "2026-06-17T01:27:35+00:00",
+                    "name": "Nathan V.",
+                    "email": "jebcraftserver@gmail.com",
+                }
+            ]
+
+    client.app.state.github = FakeGitHub()
+    client.app.state.decomp = FakeDecomp()
+
+    funcs = client.get("/api/funcs", params={"q": "A::Run"}).json()["items"]
+    tus = client.get("/api/tus", params={"q": "GameSource/A.cpp"}).json()["items"]
+    detail = client.get("/api/tu", params={"id": "GameSource/A.cpp"}).json()
+
+    assert tus[0]["completed_by"] == "JeBobs"
+    assert tus[0]["completed_by_login"] is None
+    assert tus[0]["updated_at"] == "2026-06-17T01:27:35+00:00"
+    assert funcs[0]["completed_by"] == "JeBobs"
+    assert funcs[0]["completed_by_login"] is None
+    assert funcs[0]["completed_at"] == "2026-06-17T01:27:35+00:00"
+    assert detail["completed_by"] == "JeBobs"
+    assert detail["funcs"][0]["completed_by"] == "JeBobs"
 
 
 def test_dashboard_expires_lease_less_in_progress_work(tmp_path):
