@@ -967,6 +967,16 @@ tbody tr:hover td {
   font-size: 12.5px;
 }
 
+.goal-title {
+  display: inline-block;
+  cursor: pointer;
+}
+
+.goal-title:hover,
+.goal-row:focus-within .goal-title {
+  text-decoration: underline;
+}
+
 .agent-meta,
 .tu-meta,
 .event-meta,

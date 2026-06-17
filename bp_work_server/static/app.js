@@ -580,7 +580,15 @@ function renderGoals(goals) {
     const percent = total ? (done / total) * 100 : 0;
     const row = div("goal-row");
     row.classList.add("clickable");
-    row.appendChild(div("tu-name", goal.name));
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "text-link tu-name goal-title";
+    title.textContent = goal.name;
+    title.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openGoalDetail(goal.name);
+    });
+    row.appendChild(title);
     row.appendChild(div("goal-meta", `${goal.category || "uncategorized"} · ${fmtInt(done)} / ${fmtInt(total)} done`));
     const bar = div("bar");
     const fill = document.createElement("span");
