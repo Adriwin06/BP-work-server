@@ -423,6 +423,7 @@ function expandEvents(events) {
           ts: commit.date,
           tu_id: event.tu_id,
           agent: commit.author,
+          agentLogin: commit.login || null,
           action: event.action,
           detail: {},
           reconstructed: true,
@@ -527,7 +528,9 @@ function renderEvents() {
       row.appendChild(timeCell);
       row.appendChild(div("event-cell event-action", event.action || "event"));
       const actor = div("event-cell");
-      actor.appendChild(event.agent ? actorNode(event.agent) : span("muted-text", "server"));
+      actor.appendChild(
+        event.agent ? actorNode(event.agent, event.agentLogin) : span("muted-text", "server"),
+      );
       row.appendChild(actor);
       const target = div("event-cell event-target");
       if (event.tu_id) target.appendChild(tuButton(event.tu_id, "event-tu"));
@@ -1257,7 +1260,7 @@ function renderDetail(d) {
   facts.appendChild(kv("Functions", fmtInt(d.n_funcs)));
   facts.appendChild(kv("Decfigs", fmtInt(d.n_decfigs)));
   facts.appendChild(kv("Active claim", d.owner ? actorNode(d.owner) : null));
-  if (d.completed_by) facts.appendChild(kv("Completed by", actorNode(d.completed_by)));
+  if (d.completed_by) facts.appendChild(kv("Completed by", actorNode(d.completed_by, d.completed_by_login)));
   else if (d.last_actor) facts.appendChild(kv("Last actor", actorNode(d.last_actor)));
   facts.appendChild(kv("Updated", d.updated_at ? `${fmtTime(d.updated_at)} (${relTime(d.updated_at)})` : null));
   // Prefer the server-resolved repo_path: it points at the file that actually

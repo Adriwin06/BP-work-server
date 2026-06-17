@@ -130,15 +130,18 @@ class DecompRepo:
         path = self._existing_path(rel)
         if not path:
             return {"path": None, "history": []}
-        out = self._git("log", f"--format=%aI{_FIELD_SEP}%an", "--", path)
+        out = self._git("log", f"--format=%aI{_FIELD_SEP}%an{_FIELD_SEP}%ae", "--", path)
         history: list[dict[str, str | None]] = []
         for line in (out or "").splitlines():
-            date, _, author = line.strip().partition(_FIELD_SEP)
+            date, _, rest = line.strip().partition(_FIELD_SEP)
+            name, _, email = rest.partition(_FIELD_SEP)
             if len(date) < 4 or not date[:4].isdigit():
                 continue
             if int(date[:4]) < MIN_COMMIT_YEAR:
                 continue
-            history.append({"date": date, "author": author.strip() or None})
+            history.append(
+                {"date": date, "name": name.strip() or None, "email": email.strip() or None}
+            )
         # git log is newest-first, which is the order we want.
         return {"path": path, "history": history}
 
@@ -159,8 +162,9 @@ class DecompRepo:
     def history(self, dest_path: str | None) -> list[dict[str, str | None]]:
         """Commits (newest-first) that touched the file, from MIN_COMMIT_YEAR on.
 
-        Each entry is ``{"date": iso, "author": name}``; empty when the file is
-        absent or has no qualifying commits.
+        Each entry is ``{"date": iso, "name": git_author, "email": git_email}``;
+        empty when the file is absent or has no qualifying commits. The caller
+        maps email -> GitHub login for display.
         """
         return self._record(dest_path)["history"]
 
@@ -172,10 +176,6 @@ class DecompRepo:
 
     def commit_date(self, dest_path: str | None) -> str | None:
         return self.resolve(dest_path)[1]
-
-    def last_author(self, dest_path: str | None) -> str | None:
-        history = self._record(dest_path)["history"]
-        return history[0]["author"] if history else None
 
     def repo_path(self, dest_path: str | None) -> str | None:
         return self._record(dest_path)["path"]

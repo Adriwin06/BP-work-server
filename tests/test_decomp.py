@@ -47,16 +47,16 @@ def decomp_repo(tmp_path):
 def test_history_is_newest_first_and_year_filtered(decomp_repo):
     history = decomp_repo.history("b5-decomp/src/World/Foo.cpp")
     # The 2020 commit is excluded; the two 2026 commits remain, newest first.
-    assert [c["author"] for c in history] == ["JeBobs", "Adriwin06"]
+    assert [c["name"] for c in history] == ["JeBobs", "Adriwin06"]
     assert history[0]["date"].startswith("2026-06-16")
     assert history[1]["date"].startswith("2026-06-12")
+    assert all(c["email"] for c in history)
 
 
 def test_resolve_uses_latest_qualifying_commit(decomp_repo):
     path, date = decomp_repo.resolve("b5-decomp/src/World/Foo.cpp")
     assert path == "src/World/Foo.cpp"
     assert date.startswith("2026-06-16")
-    assert decomp_repo.last_author("b5-decomp/src/World/Foo.cpp") == "JeBobs"
 
 
 def test_header_falls_back_to_cpp_sibling(decomp_repo):

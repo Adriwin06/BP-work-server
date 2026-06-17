@@ -4,7 +4,15 @@ import asyncio
 
 import httpx
 
-from bp_work_server.github import GitHubClient
+from bp_work_server.github import GitHubClient, login_from_noreply_email
+
+
+def test_login_from_noreply_email():
+    assert login_from_noreply_email("76881633+Adriwin06@users.noreply.github.com") == "Adriwin06"
+    assert login_from_noreply_email("HumanGamer@users.noreply.github.com") == "HumanGamer"
+    # Plain emails carry no login; the caller falls back to the API map.
+    assert login_from_noreply_email("jebcraftserver@gmail.com") is None
+    assert login_from_noreply_email(None) is None
 
 
 def test_github_overview_uses_cache_and_transforms_payloads():

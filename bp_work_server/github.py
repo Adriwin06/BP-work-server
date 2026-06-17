@@ -36,6 +36,22 @@ REPO_REF = os.environ.get("BP_GITHUB_REF", "dev")
 TTL_REPO = 300
 TTL_COMMITS = 180
 TTL_TREE = 600
+# Author identities barely change, so the email -> GitHub-login map is cached an
+# hour; a few pages cover every recent contributor.
+TTL_AUTHORS = 3_600
+AUTHOR_MAP_PAGES = 3
+
+
+def login_from_noreply_email(email: str | None) -> str | None:
+    """Extract a GitHub login from a ``...noreply.github.com`` commit email.
+
+    These embed the login (``12345+login@`` or ``login@``); other emails return
+    None and must be resolved via the API author map instead.
+    """
+    if not email or "users.noreply.github.com" not in email.lower():
+        return None
+    local = email.split("@", 1)[0]
+    return local.split("+", 1)[-1] or None
 
 # Cap the tree we ship to the browser; the full recursive tree can be huge.
 TREE_LIMIT = 4000
@@ -196,6 +212,39 @@ class GitHubClient:
             return out
 
         return await self._fetch(f"commits:{count}", url, TTL_COMMITS, transform)
+
+    async def _fetch_author_page(self, page: int, per_page: int) -> CacheEntry:
+        url = (
+            f"{GITHUB_API}/repos/{self.owner}/{self.repo}/commits"
+            f"?sha={self.ref}&per_page={per_page}&page={page}"
+        )
+
+        def transform(items: list[dict]) -> list[tuple[str, str]]:
+            pairs = []
+            for c in items:
+                email = ((c.get("commit") or {}).get("author") or {}).get("email")
+                login = (c.get("author") or {}).get("login")
+                if email and login:
+                    pairs.append((email.lower(), login))
+            return pairs
+
+        return await self._fetch(
+            f"authors:{self.ref}:{page}:{per_page}", url, TTL_AUTHORS, transform
+        )
+
+    async def author_login_map(self, pages: int = AUTHOR_MAP_PAGES) -> dict[str, str]:
+        """Map commit-author email -> GitHub login from recent commits.
+
+        Lets reconstructed events show the GitHub identity the dashboard uses
+        (e.g. ``JeBobs``) rather than the raw git author name (``Nathan V.``).
+        Best-effort: an empty map on failure just falls back to the git name.
+        """
+        mapping: dict[str, str] = {}
+        for page in range(1, pages + 1):
+            entry = await self._fetch_author_page(page, 100)
+            for email, login in entry.data or []:
+                mapping.setdefault(email, login)
+        return mapping
 
     async def fetch_tree(self) -> CacheEntry:
         url = (

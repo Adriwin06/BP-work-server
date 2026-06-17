@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bp_work_server import __version__
 from bp_work_server.decomp import DecompRepo
-from bp_work_server.github import GitHubClient
+from bp_work_server.github import GitHubClient, login_from_noreply_email
 from bp_work_server.models import (
     AgentRequest,
     BlockRequest,
@@ -396,12 +396,12 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         )
 
     @app.get("/api/tu")
-    def tu_detail(
+    async def tu_detail(
         id: str = Query(..., min_length=1),
         store: WorkStore = Depends(get_store),
     ) -> dict:
         try:
-            detail = store.tu_detail(id)
+            detail = await asyncio.to_thread(store.tu_detail, id)
         except KeyError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         decomp: DecompRepo = app.state.decomp
@@ -415,9 +415,12 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         # author rather than the backfilled import time / guessed completer.
         history = decomp.history(dest_path)
         if history:
-            detail["updated_at"] = history[0]["date"]
-            if history[0]["author"]:
-                detail["completed_by"] = history[0]["author"]
+            login_map = await app.state.github.author_login_map()
+            attr = attribute_commit(history[0], login_map)
+            detail["updated_at"] = attr["date"]
+            if attr["author"]:
+                detail["completed_by"] = attr["author"]
+                detail["completed_by_login"] = attr["login"]
         return detail
 
     @app.get("/api/funcs")
@@ -436,6 +439,16 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         """Cached GitHub repo info, recent commits, and file tree for the dev branch."""
         return await app.state.github.overview()
 
+    def attribute_commit(commit: dict, login_map: dict[str, str]) -> dict:
+        """Turn a raw git commit into display fields, resolving the GitHub login.
+
+        Login comes from the API email->login map, falling back to the login
+        embedded in a noreply email, then to None (display the git name).
+        """
+        email = commit.get("email") or ""
+        login = login_map.get(email.lower()) or login_from_noreply_email(email)
+        return {"date": commit["date"], "author": login or commit.get("name"), "login": login}
+
     @app.get("/events/file-history")
     async def events_file_history(store: WorkStore = Depends(get_store)) -> dict:
         """Per-file commit history for backfilled Live Events, keyed by TU id.
@@ -443,12 +456,13 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         Those rows ("workflow commit delta" / "legacy pre-server attribution")
         share one import timestamp, one meaningless commit SHA, and a guessed
         author. The truth is each file's own commit history, so we return every
-        commit (2026+) that touched the TU's destination file -- author and date
-        -- and the dashboard expands each backfilled row into one event per
-        commit. TUs whose file has no qualifying commits are omitted; the
+        commit (2026+) that touched the TU's destination file -- GitHub author
+        and date -- and the dashboard expands each backfilled row into one event
+        per commit. TUs whose file has no qualifying commits are omitted; the
         dashboard keeps the original row for them.
         """
         targets = await asyncio.to_thread(store.backfilled_event_targets)
+        login_map = await app.state.github.author_login_map()
         decomp: DecompRepo = app.state.decomp
 
         def resolve() -> dict[str, list]:
@@ -456,7 +470,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             for tu_id, dest_path in targets.items():
                 commits = decomp.history(dest_path)
                 if commits:
-                    history[tu_id] = commits
+                    history[tu_id] = [attribute_commit(c, login_map) for c in commits]
             return history
 
         return {"history": await asyncio.to_thread(resolve)}
