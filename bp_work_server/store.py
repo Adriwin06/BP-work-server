@@ -1060,6 +1060,107 @@ class WorkStore:
                 "goals": goals,
             }
 
+    def goal_detail(self, name: str) -> dict[str, Any]:
+        """Everything still needed to finish a goal, ranked like the next queue."""
+        with self.connect() as con:
+            self._expire_leases(con)
+            goal = con.execute(
+                "SELECT name, category, source, description FROM goal WHERE name=?", (name,)
+            ).fetchone()
+            if goal is None:
+                raise KeyError(f"unknown goal: {name}")
+
+            scope = {
+                row["tu_id"]
+                for row in con.execute("SELECT tu_id FROM goal_tu WHERE goal_name=?", (name,))
+            }
+            counts = {key: 0 for key in TU_STATUSES}
+            rows = con.execute(
+                f"""
+                SELECT *
+                FROM tu
+                WHERE id IN ({",".join("?" for _ in scope) if scope else "NULL"})
+                """,
+                list(scope),
+            ).fetchall()
+            for row in rows:
+                counts[row["status"]] = counts.get(row["status"], 0) + 1
+
+            dep_map: dict[str, set[str]] = defaultdict(set)
+            for row in con.execute("SELECT tu_id, dep_id FROM tu_dep"):
+                dep_map[row["tu_id"]].add(row["dep_id"])
+            status_by_tu = {
+                row["id"]: row["status"] for row in con.execute("SELECT id, status FROM tu")
+            }
+
+            remaining: list[dict[str, Any]] = []
+            for row in rows:
+                if row["status"] == "done":
+                    continue
+                item = self._dashboard_tu(row)
+                remaining.append(item)
+
+            def rank(item: dict[str, Any]) -> tuple[int, int, int, int, str]:
+                status_rank = {
+                    "todo": 0,
+                    "in_progress": 1,
+                    "compiled": 2,
+                    "blocked": 3,
+                }.get(item["status"], 4)
+                return (
+                    status_rank,
+                    item["unresolved_deps"] if item["status"] == "todo" else 0,
+                    item["source"] != "decfigs",
+                    item["n_funcs"],
+                    item["id"],
+                )
+
+            self._enrich_tu_items(con, remaining)
+            aliases, _profiles = self.actor_maps()
+            self._canonicalize_item_actors(remaining, aliases)
+            for item in remaining:
+                scoped_deps = {dep_id for dep_id in dep_map.get(item["id"], set()) if dep_id in scope}
+                unresolved = [
+                    dep_id for dep_id in scoped_deps if status_by_tu.get(dep_id) != "done"
+                ]
+                item["total_deps"] = len(scoped_deps)
+                item["unresolved_deps"] = len(unresolved)
+                item["unresolved_dep_ids"] = sorted(unresolved)
+            remaining.sort(key=rank)
+
+            ready = [
+                item for item in remaining
+                if item["status"] == "todo" and item["unresolved_deps"] == 0
+            ]
+            waiting = [item for item in remaining if item["status"] == "compiled"]
+            active = [
+                item for item in remaining
+                if item["status"] == "in_progress" and item.get("owner")
+            ]
+            blocked = [item for item in remaining if item["status"] == "blocked"]
+            locked = [
+                item for item in remaining
+                if item["status"] == "todo" and item["unresolved_deps"] > 0
+            ]
+            total = len(scope)
+            done = counts.get("done", 0)
+            return {
+                "name": goal["name"],
+                "category": goal["category"],
+                "source": goal["source"],
+                "description": goal["description"],
+                "total": total,
+                "done": done,
+                "remaining_count": total - done,
+                "counts": counts,
+                "ready": ready,
+                "active": active,
+                "waiting_review": waiting,
+                "blocked": blocked,
+                "locked": locked,
+                "remaining": remaining,
+            }
+
     def search_tus(
         self,
         *,

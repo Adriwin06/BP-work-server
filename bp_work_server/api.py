@@ -398,6 +398,16 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     def facets(store: WorkStore = Depends(get_store)) -> dict:
         return store.facets()
 
+    @app.get("/api/goal")
+    def goal_detail(
+        name: str = Query(..., min_length=1),
+        store: WorkStore = Depends(get_store),
+    ) -> dict:
+        try:
+            return store.goal_detail(name)
+        except KeyError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
     async def file_attrs(dest_paths: set[str]) -> dict[str, dict]:
         if not dest_paths:
             return {}

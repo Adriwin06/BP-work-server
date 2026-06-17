@@ -579,6 +579,7 @@ function renderGoals(goals) {
     const total = Number(goal.total || 0);
     const percent = total ? (done / total) * 100 : 0;
     const row = div("goal-row");
+    row.classList.add("clickable");
     row.appendChild(div("tu-name", goal.name));
     row.appendChild(div("goal-meta", `${goal.category || "uncategorized"} · ${fmtInt(done)} / ${fmtInt(total)} done`));
     const bar = div("bar");
@@ -586,6 +587,7 @@ function renderGoals(goals) {
     fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
     bar.appendChild(fill);
     row.appendChild(bar);
+    row.addEventListener("click", () => openGoalDetail(goal.name));
     root.appendChild(row);
   }
 }
@@ -1221,6 +1223,19 @@ async function openDetail(tuId) {
   }
 }
 
+async function openGoalDetail(goalName) {
+  const overlay = el("detailOverlay");
+  overlay.classList.remove("hidden");
+  text("detailTitle", `Goal: ${goalName}`);
+  el("detailBody").innerHTML = '<p class="muted-text">Loading...</p>';
+  try {
+    renderGoalDetail(await fetchJson(`/api/goal?name=${encodeURIComponent(goalName)}`, 15000));
+  } catch (error) {
+    el("detailBody").innerHTML = "";
+    el("detailBody").appendChild(div("muted-text", `Failed to load: ${error.message}`));
+  }
+}
+
 function closeDetail() {
   el("detailOverlay").classList.add("hidden");
 }
@@ -1303,6 +1318,73 @@ function renderDetail(d) {
       funcs.appendChild(row);
     });
   body.appendChild(funcs);
+}
+
+function renderGoalDetail(goal) {
+  const body = el("detailBody");
+  body.innerHTML = "";
+  const total = Number(goal.total || 0);
+  const done = Number(goal.done || 0);
+  const remaining = Number(goal.remaining_count || 0);
+  const counts = goal.counts || {};
+
+  const banner = div("detail-banner");
+  banner.appendChild(span("tag goal-tag", goal.category || "goal"));
+  if (goal.source) banner.appendChild(span("tag goal-tag", goal.source));
+  body.appendChild(banner);
+
+  const overview = detailSection("Overview");
+  overview.appendChild(kv("Progress", `${fmtInt(done)} / ${fmtInt(total)} done`));
+  overview.appendChild(kv("Remaining", fmtInt(remaining)));
+  overview.appendChild(kv("Ready now", fmtInt((goal.ready || []).length)));
+  overview.appendChild(kv("In progress", fmtInt((goal.active || []).length)));
+  overview.appendChild(kv("Waiting review", fmtInt((goal.waiting_review || []).length)));
+  overview.appendChild(kv("Blocked", fmtInt((goal.blocked || []).length)));
+  if (goal.description) overview.appendChild(kv("Description", goal.description));
+  body.appendChild(overview);
+
+  const status = detailSection("Status Breakdown");
+  for (const key of ["todo", "in_progress", "compiled", "blocked", "done"]) {
+    const row = div("dep-row");
+    row.appendChild(statusPill(key));
+    row.appendChild(span("dep-name", `${fmtInt(counts[key] || 0)} TUs`));
+    status.appendChild(row);
+  }
+  body.appendChild(status);
+
+  body.appendChild(goalTuSection("Ready Next", goal.ready, "No ready TUs inside this goal."));
+  body.appendChild(goalTuSection("In Progress", goal.active, "No active claims inside this goal."));
+  body.appendChild(goalTuSection("Waiting Review", goal.waiting_review, "No compiled TUs waiting for review."));
+  body.appendChild(goalTuSection("Blocked", goal.blocked, "No blocked TUs inside this goal."));
+  body.appendChild(goalTuSection("Dependency Locked", goal.locked, "No remaining TUs are waiting on goal dependencies."));
+  body.appendChild(goalTuSection("All Remaining", goal.remaining, "This goal is complete."));
+}
+
+function goalTuSection(title, items, emptyText) {
+  const section = detailSection(`${title} (${(items || []).length})`);
+  if (!items || !items.length) {
+    section.appendChild(div("muted-text", emptyText));
+    return section;
+  }
+  for (const item of items) section.appendChild(goalTuRow(item));
+  return section;
+}
+
+function goalTuRow(item) {
+  const row = div("dep-row clickable goal-tu-row");
+  const main = div("goal-tu-main");
+  main.appendChild(span("dep-name", item.id));
+  const meta = [];
+  if (item.dest_path) meta.push(item.dest_path);
+  if (item.unresolved_deps) meta.push(`${fmtInt(item.unresolved_deps)} unresolved deps`);
+  else if (item.status === "todo") meta.push("ready");
+  if (item.owner) meta.push(`claimed by ${item.owner}`);
+  if (item.notes) meta.push(item.notes);
+  main.appendChild(div("tu-meta", meta.join(" | ")));
+  row.appendChild(main);
+  row.appendChild(statusPill(item.status));
+  row.addEventListener("click", () => openDetail(item.id));
+  return row;
 }
 
 function depRow(dep, status) {

@@ -392,6 +392,47 @@ def test_explorer_search_filter_and_detail(tmp_path):
     assert missing.status_code == 404
 
 
+def test_goal_detail_lists_remaining_work(tmp_path):
+    client, store = make_client(tmp_path)
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO goal(name, category, source, description) VALUES(?, ?, ?, ?)",
+            ("boot-trace", "milestones", "manual", "Boot path"),
+        )
+        con.execute(
+            "INSERT INTO goal_tu(goal_name, tu_id) VALUES('boot-trace', 'GameSource/A.cpp')"
+        )
+        con.execute(
+            "INSERT INTO goal_tu(goal_name, tu_id) VALUES('boot-trace', 'GameSource/B.cpp')"
+        )
+        con.execute(
+            "INSERT INTO tu_dep(tu_id, dep_id, weight) VALUES('GameSource/A.cpp', 'GameSource/B.cpp', 1)"
+        )
+        con.execute(
+            """
+            UPDATE tu
+            SET status='blocked', notes='needs reference'
+            WHERE id='GameSource/B.cpp'
+            """
+        )
+
+    detail = client.get("/api/goal", params={"name": "boot-trace"}).json()
+
+    assert detail["name"] == "boot-trace"
+    assert detail["total"] == 2
+    assert detail["remaining_count"] == 2
+    assert detail["counts"]["todo"] == 1
+    assert detail["counts"]["blocked"] == 1
+    assert detail["ready"] == []
+    assert [item["id"] for item in detail["locked"]] == ["GameSource/A.cpp"]
+    assert detail["locked"][0]["unresolved_dep_ids"] == ["GameSource/B.cpp"]
+    assert [item["id"] for item in detail["blocked"]] == ["GameSource/B.cpp"]
+    assert detail["blocked"][0]["notes"] == "needs reference"
+
+    missing = client.get("/api/goal", params={"name": "missing"})
+    assert missing.status_code == 404
+
+
 def test_export_status_mirrors_durable_states(tmp_path):
     """GET /export/status reproduces the committed status.json shape from the live DB:
     only durable done/blocked TUs (+notes) and non-todo func statuses -- never the
