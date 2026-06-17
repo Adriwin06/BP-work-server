@@ -192,6 +192,9 @@ function tuButton(tuId, className = "tu-name") {
 
 function detailText(detail) {
   if (!detail || !Object.keys(detail).length) return "";
+  if (detail.reconstructed || detail.source === "b5-decomp commit reconstruction") {
+    return "reconstructed from b5-decomp";
+  }
   return Object.entries(detail)
     // The stored commit SHA is the bogus backfill one; never surface it.
     .filter(([key]) => key !== "commit")
@@ -531,7 +534,8 @@ function renderEvents() {
       if (event.tu_id) target.appendChild(tuButton(event.tu_id, "event-tu"));
       else target.textContent = "server";
       row.appendChild(target);
-      row.appendChild(div("event-cell event-detail", detailText(event.detail) || "-"));
+      const detail = div("event-cell event-detail", detailText(event.detail) || "-");
+      row.appendChild(detail);
       root.appendChild(row);
     }
   }
