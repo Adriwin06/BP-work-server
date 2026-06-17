@@ -179,6 +179,16 @@ def test_function_search_uses_file_attribution_like_detail_drawer(tmp_path):
             """,
             (iso(),),
         )
+        con.execute(
+            "INSERT INTO event(ts, tu_id, agent, action, detail_json) VALUES(?,?,?,?,?)",
+            (
+                "2026-06-17T01:27:35+00:00",
+                "GameSource/A.cpp",
+                "JeBobs",
+                "review_pass",
+                '{"source": "b5-decomp commit reconstruction", "reconstructed": true}',
+            ),
+        )
 
     class FakeGitHub:
         async def author_login_map(self):
@@ -206,10 +216,7 @@ def test_function_search_uses_file_attribution_like_detail_drawer(tmp_path):
     detail = client.get("/api/tu", params={"id": "GameSource/A.cpp"}).json()
 
     assert tus[0]["completed_by"] == "JeBobs"
-    assert tus[0]["completed_by_login"] is None
-    assert tus[0]["updated_at"] == "2026-06-17T01:27:35+00:00"
     assert funcs[0]["completed_by"] == "JeBobs"
-    assert funcs[0]["completed_by_login"] is None
     assert funcs[0]["completed_at"] == "2026-06-17T01:27:35+00:00"
     assert detail["completed_by"] == "JeBobs"
     assert detail["funcs"][0]["completed_by"] == "JeBobs"

@@ -1292,6 +1292,7 @@ class WorkStore:
             aliases, _profiles = self.actor_maps()
             for item in items:
                 item["completed_by"] = self.canonical_actor(item["completed_by"], aliases)
+            self._enrich_func_items_from_events(con, items, aliases)
             return {"total": total, "limit": limit, "offset": offset, "items": items}
 
     def _next_tus_from_connection(
@@ -1681,6 +1682,44 @@ class WorkStore:
         for item in items:
             for key in ("owner", "last_actor", "completed_by"):
                 item[key] = self.canonical_actor(item.get(key), aliases)
+
+    def _enrich_func_items_from_events(
+        self,
+        con: sqlite3.Connection,
+        items: list[dict[str, Any]],
+        aliases: dict[str, str],
+    ) -> None:
+        tu_ids = sorted({item["tu_id"] for item in items if item.get("tu_id")})
+        if not tu_ids:
+            return
+        by_tu = {tu_id: [] for tu_id in tu_ids}
+        for item in items:
+            if item.get("tu_id") in by_tu:
+                by_tu[item["tu_id"]].append(item)
+        placeholders = ",".join("?" for _ in tu_ids)
+        for row in con.execute(
+            f"""
+            SELECT e.tu_id, e.agent, e.ts, e.detail_json
+            FROM event e
+            JOIN (
+              SELECT tu_id, MAX(id) AS max_id
+              FROM event
+              WHERE tu_id IN ({placeholders})
+                AND agent IS NOT NULL
+                AND action='review_pass'
+              GROUP BY tu_id
+            ) latest ON latest.max_id=e.id
+            """,
+            tu_ids,
+        ):
+            actor = self.canonical_actor(row["agent"], aliases)
+            detail = json.loads(row["detail_json"] or "{}")
+            login = detail.get("github_login")
+            for item in by_tu.get(row["tu_id"], []):
+                item["completed_by"] = actor
+                item["completed_at"] = row["ts"]
+                if login:
+                    item["completed_by_login"] = login
 
     def _prefer_username(self, candidate: str, current: str) -> bool:
         """Pick a display spelling when worker rows only differ by case."""

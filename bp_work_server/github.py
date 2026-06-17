@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+from bp_work_server.decomp import DEFAULT_DECOMP_ROOT
 
 GITHUB_API = "https://api.github.com"
 
@@ -55,6 +59,7 @@ def login_from_noreply_email(email: str | None) -> str | None:
 
 # Cap the tree we ship to the browser; the full recursive tree can be huge.
 TREE_LIMIT = 4000
+_FIELD_SEP = "\x1f"
 
 
 @dataclass
@@ -76,6 +81,10 @@ class GitHubClient:
     _locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     _client: httpx.AsyncClient | None = None
     rate: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def local_root(self) -> Path:
+        return Path(os.environ.get("BP_DECOMP_ROOT", DEFAULT_DECOMP_ROOT))
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -271,17 +280,118 @@ class GitHubClient:
 
         return await self._fetch("tree", url, TTL_TREE, transform)
 
+    def _local_git(self, *args: str) -> str | None:
+        root = self.local_root
+        if not (root / ".git").exists():
+            return None
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout
+
+    def _local_repo_info(self) -> dict:
+        return {
+            "full_name": f"{self.owner}/{self.repo}",
+            "description": "Local b5-decomp clone",
+            "html_url": f"https://github.com/{self.owner}/{self.repo}",
+            "default_branch": self.ref,
+            "stargazers_count": 0,
+            "forks_count": 0,
+            "open_issues_count": 0,
+            "watchers_count": 0,
+            "language": "C++",
+            "pushed_at": self._local_latest_date(),
+            "license": None,
+        }
+
+    def _local_latest_date(self) -> str | None:
+        out = self._local_git("log", "-1", "--format=%cI")
+        return out.strip() if out and out.strip() else None
+
+    def _local_commits(self, count: int = 8) -> list[dict]:
+        out = self._local_git(
+            "log",
+            f"-{count}",
+            f"--format=%H{_FIELD_SEP}%s{_FIELD_SEP}%an{_FIELD_SEP}%aI",
+        )
+        commits = []
+        for line in (out or "").splitlines():
+            sha, _, rest = line.partition(_FIELD_SEP)
+            message, _, rest = rest.partition(_FIELD_SEP)
+            author, _, date = rest.partition(_FIELD_SEP)
+            sha = sha.strip()
+            if not sha:
+                continue
+            commits.append(
+                {
+                    "sha": sha,
+                    "short_sha": sha[:7],
+                    "message": message.strip(),
+                    "author": author.strip() or None,
+                    "login": None,
+                    "avatar_url": None,
+                    "date": date.strip() or None,
+                    "html_url": f"https://github.com/{self.owner}/{self.repo}/commit/{sha}",
+                    "local_fallback": True,
+                }
+            )
+        return commits
+
+    def _local_tree(self) -> dict | None:
+        out = self._local_git("ls-tree", "-r", "--long", "HEAD")
+        if out is None:
+            return None
+        nodes = []
+        count = 0
+        for line in out.splitlines():
+            meta, _, path = line.partition("\t")
+            if not path:
+                continue
+            count += 1
+            parts = meta.split()
+            kind = parts[1] if len(parts) > 1 else "blob"
+            size = None
+            if len(parts) > 3 and parts[3].isdigit():
+                size = int(parts[3])
+            if len(nodes) < TREE_LIMIT:
+                nodes.append({"path": path, "type": kind, "size": size})
+        return {
+            "sha": None,
+            "truncated": count > TREE_LIMIT,
+            "count": count,
+            "tree": nodes,
+            "local_fallback": True,
+        }
+
     async def overview(self) -> dict:
         repo, commits, tree = await asyncio.gather(
             self.fetch_repo(), self.fetch_commits(), self.fetch_tree()
         )
+        local_commits = commits.data or await asyncio.to_thread(self._local_commits)
+        local_tree = tree.data or await asyncio.to_thread(self._local_tree)
+        repo_info = repo.data or await asyncio.to_thread(self._local_repo_info)
         errors = [e.error for e in (repo, commits, tree) if e.error]
+        if not commits.data and local_commits:
+            errors.append("github commits unavailable; serving local b5-decomp clone")
+        if not tree.data and local_tree:
+            errors.append("github tree unavailable; serving local b5-decomp clone")
+        if not repo.data and repo_info:
+            errors.append("github repo metadata unavailable; serving local b5-decomp clone")
         return {
             "repo": {"owner": self.owner, "name": self.repo, "ref": self.ref},
-            "info": repo.data,
-            "commits": commits.data or [],
-            "latest_commit": (commits.data or [None])[0],
-            "tree": tree.data,
+            "info": repo_info,
+            "commits": local_commits or [],
+            "latest_commit": (local_commits or [None])[0],
+            "tree": local_tree,
             "rate_limit": self.rate,
             "errors": errors,
             "fetched_at": time.time(),

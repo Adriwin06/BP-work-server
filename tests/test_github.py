@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 
 import httpx
 
@@ -82,3 +84,50 @@ def test_github_overview_uses_cache_and_transforms_payloads():
     assert first["tree"]["tree"][0] == {"path": "src/foo.cpp", "type": "blob", "size": 42}
     assert second["latest_commit"]["short_sha"] == "abcdef1"
     assert len(calls) == 3
+
+
+def test_github_overview_falls_back_to_local_clone_on_rate_limit(tmp_path, monkeypatch):
+    repo = tmp_path / "b5-decomp"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "foo.cpp").write_text("// foo\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "dev"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Local Dev"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": "2026-06-17T02:00:00+00:00",
+        "GIT_COMMITTER_DATE": "2026-06-17T02:00:00+00:00",
+    }
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-q", "-m", "Local commit"],
+        check=True,
+        env=env,
+    )
+    monkeypatch.setenv("BP_DECOMP_ROOT", str(repo))
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Limit": "60"},
+            json={"message": "rate limited"},
+        )
+
+    async def run():
+        client = GitHubClient(owner="owner", repo="repo", ref="dev")
+        client._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://api.github.com",
+        )
+        try:
+            return await client.overview()
+        finally:
+            await client.aclose()
+
+    overview = asyncio.run(run())
+
+    assert overview["info"]["full_name"] == "owner/repo"
+    assert overview["latest_commit"]["message"] == "Local commit"
+    assert overview["latest_commit"]["author"] == "Local Dev"
+    assert overview["tree"]["tree"][0] == {"path": "src/foo.cpp", "type": "blob", "size": 7}
+    assert any("local b5-decomp clone" in error for error in overview["errors"])

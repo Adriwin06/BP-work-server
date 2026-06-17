@@ -38,7 +38,7 @@ REFRESH_TTL = 900
 MIN_COMMIT_YEAR = int(os.environ.get("BP_DECOMP_MIN_YEAR", "2026"))
 
 # Field separator for ``git log`` output; ASCII unit separator never appears in
-# author names or ISO dates, so it parses unambiguously.
+# hashes, author names, or ISO dates, so it parses unambiguously.
 _FIELD_SEP = "\x1f"
 
 # Destination paths are stored as "b5-decomp/src/...": the repo-name prefix is
@@ -130,17 +130,28 @@ class DecompRepo:
         path = self._existing_path(rel)
         if not path:
             return {"path": None, "history": []}
-        out = self._git("log", f"--format=%aI{_FIELD_SEP}%an{_FIELD_SEP}%ae", "--", path)
+        out = self._git(
+            "log",
+            f"--format=%H{_FIELD_SEP}%aI{_FIELD_SEP}%an{_FIELD_SEP}%ae",
+            "--",
+            path,
+        )
         history: list[dict[str, str | None]] = []
         for line in (out or "").splitlines():
-            date, _, rest = line.strip().partition(_FIELD_SEP)
+            commit, _, rest = line.strip().partition(_FIELD_SEP)
+            date, _, rest = rest.partition(_FIELD_SEP)
             name, _, email = rest.partition(_FIELD_SEP)
             if len(date) < 4 or not date[:4].isdigit():
                 continue
             if int(date[:4]) < MIN_COMMIT_YEAR:
                 continue
             history.append(
-                {"date": date, "name": name.strip() or None, "email": email.strip() or None}
+                {
+                    "commit": commit.strip() or None,
+                    "date": date,
+                    "name": name.strip() or None,
+                    "email": email.strip() or None,
+                }
             )
         # git log is newest-first, which is the order we want.
         return {"path": path, "history": history}
@@ -162,9 +173,9 @@ class DecompRepo:
     def history(self, dest_path: str | None) -> list[dict[str, str | None]]:
         """Commits (newest-first) that touched the file, from MIN_COMMIT_YEAR on.
 
-        Each entry is ``{"date": iso, "name": git_author, "email": git_email}``;
-        empty when the file is absent or has no qualifying commits. The caller
-        maps email -> GitHub login for display.
+        Each entry is ``{"commit": sha, "date": iso, "name": git_author,
+        "email": git_email}``; empty when the file is absent or has no
+        qualifying commits. The caller maps email -> GitHub login for display.
         """
         return self._record(dest_path)["history"]
 

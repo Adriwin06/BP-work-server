@@ -27,6 +27,19 @@ def main() -> None:
     import_p.add_argument("workflow_root", help="Path to BP-Decomp_Workflow.")
     import_p.add_argument("--reset", action="store_true", help="Clear existing server data first.")
 
+    reconcile_p = sub.add_parser(
+        "reconcile-events",
+        help="Reconstruct missing review_pass events from committed b5-decomp files.",
+    )
+    reconcile_p.add_argument("--decomp-root", help="Path to a local b5-decomp checkout.")
+    reconcile_p.add_argument("--branch", help="Branch/ref to fetch before scanning.")
+    reconcile_p.add_argument(
+        "--actor",
+        action="append",
+        help="Only reconstruct events for this canonical actor. Repeatable.",
+    )
+    reconcile_p.add_argument("--apply", action="store_true", help="Write reconstructed events.")
+
     serve_p = sub.add_parser("serve", help="Run the API server.")
     serve_p.add_argument("--host", default="127.0.0.1")
     serve_p.add_argument("--port", type=int, default=8765)
@@ -71,6 +84,33 @@ def main() -> None:
             f"{result['tus']} TUs, {result['funcs']} funcs, {result['deps']} deps, "
             f"{result['goals']} goals ({result['status_rows']} status rows)"
         )
+        return
+
+    if args.cmd == "reconcile-events":
+        from bp_work_server.decomp import DecompRepo
+        from bp_work_server.reconcile_events import reconcile_review_events_from_decomp
+
+        decomp = DecompRepo(root=args.decomp_root, branch=args.branch)
+        result = reconcile_review_events_from_decomp(
+            store,
+            decomp,
+            actors=set(args.actor or []),
+            apply=args.apply,
+        )
+        mode = "applied" if args.apply else "dry run"
+        print(f"reconcile-events {mode}")
+        print(f"  scanned TUs: {result.scanned_tus}")
+        print(f"  scanned commits: {result.scanned_commits}")
+        print(f"  reconstructed review_pass events: {result.inserted}")
+        print(f"  skipped existing real workflow events: {result.skipped_existing_real}")
+        print(
+            "  skipped existing reconstructed events: "
+            f"{result.skipped_existing_reconstructed}"
+        )
+        print(f"  skipped actor filter: {result.skipped_actor_filter}")
+        print(f"  skipped unresolved actor: {result.skipped_unresolved_actor}")
+        if not args.apply:
+            print("  re-run with --apply to write")
         return
 
     if args.cmd == "worker":

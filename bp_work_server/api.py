@@ -419,15 +419,6 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             q=q, statuses=status, source=source, goal=goal, owner=owner,
             sort=sort, order=order, limit=limit, offset=offset,
         )
-        items = result.get("items") or []
-        dest_paths = {
-            item.get("dest_path")
-            for item in items
-            if item.get("dest_path") and item.get("status") in {"done", "compiled"}
-        }
-        attrs_by_dest = await file_attrs(dest_paths)
-        for item in items:
-            apply_tu_file_attr(item, attrs_by_dest.get(item.get("dest_path")))
         return result
 
     @app.get("/api/tu")
@@ -471,15 +462,6 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         result = await asyncio.to_thread(
             store.search_funcs, q=q, statuses=status, tu=tu, limit=limit, offset=offset
         )
-        items = result.get("items") or []
-        dest_paths = {item.get("tu_dest_path") for item in items if item.get("tu_dest_path")}
-        attrs_by_dest = await file_attrs(dest_paths)
-        for item in items:
-            attr = attrs_by_dest.get(item.get("tu_dest_path"))
-            if attr and attr.get("author"):
-                item["completed_by"] = attr["author"]
-                item["completed_by_login"] = attr["login"]
-                item["completed_at"] = attr["date"]
         return result
 
     @app.get("/github/overview")
