@@ -268,6 +268,145 @@ def test_tu_search_uses_file_attribution_like_detail_drawer(tmp_path):
     assert detail["updated_at"] == "2026-06-16T15:28:23+00:00"
 
 
+def test_surviving_line_primary_contributor_is_consistent_across_explorer(tmp_path):
+    client, store = make_client(tmp_path)
+    store.create_worker("JeBobs", github_username="JeBobs")
+    with store.connect() as con:
+        con.execute("UPDATE tu SET status='done' WHERE id='GameSource/A.cpp'")
+        con.execute("UPDATE func SET status='reviewed' WHERE name='A::Run'")
+        con.execute(
+            """
+            UPDATE func
+            SET status='reviewed', completed_by='Derneuere', completed_at=?
+            WHERE name='A::Run'
+            """,
+            (iso(),),
+        )
+
+    class FakeGitHub:
+        async def author_login_map(self):
+            return {}
+
+    class FakeDecomp:
+        def repo_path(self, dest_path):
+            return dest_path.removeprefix("b5-decomp/")
+
+        def history(self, dest_path):
+            return [
+                {
+                    "date": "2026-06-17T17:09:01+00:00",
+                    "name": "Derneuere",
+                    "email": "derneuere@example.test",
+                }
+            ]
+
+        def contributors(self, dest_path, line_range=None):
+            return {
+                "path": self.repo_path(dest_path),
+                "basis": "surviving_lines",
+                "line_range": list(line_range) if line_range else None,
+                "contributors": [
+                    {"name": "JeBobs", "email": "jebobs@example.test", "lines": 12, "percent": 75.0},
+                    {"name": "Derneuere", "email": "derneuere@example.test", "lines": 4, "percent": 25.0},
+                ],
+            }
+
+        def function_contributors(self, dest_path, function_name):
+            result = self.contributors(dest_path, line_range=(10, 20))
+            result["function_range_found"] = True
+            return result
+
+    client.app.state.github = FakeGitHub()
+    client.app.state.decomp = FakeDecomp()
+
+    tus = client.get("/api/tus", params={"q": "GameSource/A.cpp"}).json()["items"]
+    detail = client.get("/api/tu", params={"id": "GameSource/A.cpp"}).json()
+    funcs = client.get("/api/funcs", params={"q": "A::Run"}).json()["items"]
+
+    assert tus[0]["primary_contributor"] == "JeBobs"
+    assert tus[0]["primary_contributor_login"] == "JeBobs"
+    assert tus[0]["completed_by"] == "JeBobs"
+    assert tus[0]["latest_change_by"] == "Derneuere"
+    assert detail["primary_contributor"] == "JeBobs"
+    assert detail["primary_contributor_login"] == "JeBobs"
+    assert detail["latest_change_by"] == "Derneuere"
+    assert detail["funcs"][0]["primary_contributor"] == "JeBobs"
+    assert detail["funcs"][0]["primary_contributor_login"] == "JeBobs"
+    assert detail["funcs"][0]["function_range_found"] is True
+    assert funcs[0]["primary_contributor"] == "JeBobs"
+    assert funcs[0]["primary_contributor_login"] == "JeBobs"
+    assert funcs[0]["function_range_found"] is True
+
+
+def test_attribution_is_cached_by_repo_revision(tmp_path):
+    client, store = make_client(tmp_path)
+    with store.connect() as con:
+        con.execute("UPDATE tu SET status='done' WHERE id='GameSource/A.cpp'")
+        con.execute("UPDATE func SET status='reviewed' WHERE name='A::Run'")
+
+    class FakeGitHub:
+        async def author_login_map(self):
+            raise AssertionError("attribution should not need GitHub author maps")
+
+    class FakeDecomp:
+        def __init__(self):
+            self.file_calls = 0
+            self.function_calls = 0
+
+        def revision(self):
+            return "abc123"
+
+        def repo_path(self, dest_path):
+            return dest_path.removeprefix("b5-decomp/")
+
+        def history(self, dest_path):
+            return [
+                {
+                    "date": "2026-06-17T17:09:01+00:00",
+                    "name": "Derneuere",
+                    "email": "derneuere@example.test",
+                }
+            ]
+
+        def contributors(self, dest_path, line_range=None):
+            self.file_calls += 1
+            return {
+                "path": self.repo_path(dest_path),
+                "basis": "surviving_lines",
+                "line_range": list(line_range) if line_range else None,
+                "contributors": [
+                    {"name": "JeBobs", "email": "jebobs@example.test", "lines": 12, "percent": 100.0},
+                ],
+            }
+
+        def function_contributors(self, dest_path, function_name):
+            self.function_calls += 1
+            return {
+                "path": self.repo_path(dest_path),
+                "basis": "surviving_lines",
+                "line_range": [10, 20],
+                "function_range_found": True,
+                "contributors": [
+                    {"name": "JeBobs", "email": "jebobs@example.test", "lines": 12, "percent": 100.0},
+                ],
+            }
+
+    fake_decomp = FakeDecomp()
+    client.app.state.github = FakeGitHub()
+    client.app.state.decomp = fake_decomp
+
+    first = client.get("/api/tu", params={"id": "GameSource/A.cpp"}).json()
+    second = client.get("/api/tu", params={"id": "GameSource/A.cpp"}).json()
+
+    assert first["primary_contributor"] == "JeBobs"
+    assert second["primary_contributor"] == "JeBobs"
+    assert fake_decomp.file_calls == 1
+    assert fake_decomp.function_calls == 1
+    with store.connect() as con:
+        cached = con.execute("SELECT COUNT(*) AS n FROM attribution_cache").fetchone()["n"]
+    assert cached == 2
+
+
 def test_idle_todo_tu_detail_hides_import_timestamp(tmp_path):
     client, _store = make_client(tmp_path)
 

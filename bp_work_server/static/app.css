@@ -1783,6 +1783,36 @@ td:nth-child(4) {
   word-break: break-word;
 }
 
+.actor-stack {
+  display: grid;
+  gap: 2px;
+}
+
+.contributor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+}
+
+.contributor-main {
+  min-width: 0;
+}
+
+.contributor-meter {
+  height: 7px;
+  overflow: hidden;
+  background: rgba(157, 145, 130, 0.18);
+  clip-path: polygon(4px 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+}
+
+.contributor-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold), var(--green));
+}
+
 .dep-row {
   display: flex;
   align-items: center;

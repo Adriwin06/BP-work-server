@@ -83,11 +83,23 @@ CREATE TABLE IF NOT EXISTS event(
   detail_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS attribution_cache(
+  scope TEXT NOT NULL,
+  dest_path TEXT NOT NULL,
+  function_name TEXT NOT NULL DEFAULT '',
+  repo_rev TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(scope, dest_path, function_name, repo_rev)
+);
+
 CREATE INDEX IF NOT EXISTS ix_tu_status ON tu(status);
 CREATE INDEX IF NOT EXISTS ix_tu_owner ON tu(owner);
 CREATE INDEX IF NOT EXISTS ix_func_tu ON func(tu_id);
 CREATE INDEX IF NOT EXISTS ix_dep_tu ON tu_dep(tu_id);
 CREATE INDEX IF NOT EXISTS ix_event_ts ON event(ts);
+CREATE INDEX IF NOT EXISTS ix_attribution_cache_lookup
+  ON attribution_cache(scope, dest_path, function_name);
 """
 
 
@@ -1837,6 +1849,63 @@ class WorkStore:
         if total <= 0:
             return 0.0
         return round((value / total) * 100, 2)
+
+    def attribution_cache_get(
+        self,
+        *,
+        scope: str,
+        dest_path: str,
+        repo_rev: str,
+        function_name: str = "",
+    ) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute(
+                """
+                SELECT payload_json
+                FROM attribution_cache
+                WHERE scope=? AND dest_path=? AND function_name=? AND repo_rev=?
+                """,
+                (scope, dest_path, function_name, repo_rev),
+            ).fetchone()
+        if not row:
+            return None
+        return json.loads(row["payload_json"] or "{}")
+
+    def attribution_cache_set(
+        self,
+        *,
+        scope: str,
+        dest_path: str,
+        repo_rev: str,
+        payload: dict[str, Any],
+        function_name: str = "",
+    ) -> None:
+        with self.connect() as con:
+            con.execute(
+                """
+                DELETE FROM attribution_cache
+                WHERE scope=? AND dest_path=? AND function_name=? AND repo_rev != ?
+                """,
+                (scope, dest_path, function_name, repo_rev),
+            )
+            con.execute(
+                """
+                INSERT INTO attribution_cache(
+                    scope, dest_path, function_name, repo_rev, payload_json, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scope, dest_path, function_name, repo_rev)
+                DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at
+                """,
+                (
+                    scope,
+                    dest_path,
+                    function_name,
+                    repo_rev,
+                    json.dumps(payload, sort_keys=True),
+                    iso(),
+                ),
+            )
 
     def _get_meta(self, con: sqlite3.Connection, key: str) -> str | None:
         row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()

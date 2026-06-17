@@ -179,6 +179,41 @@ function actorNode(name, githubUsername) {
   return link;
 }
 
+function attributionMeta(item, fallback = "primary contributor") {
+  if (item.primary_contributor) {
+    const parts = [fallback];
+    if (item.primary_contributor_lines != null) {
+      parts.push(`${fmtInt(item.primary_contributor_lines)} surviving lines`);
+    }
+    if (Number(item.contributor_count || 0) > 1) {
+      parts.push(`+${fmtInt(Number(item.contributor_count) - 1)}`);
+    }
+    return parts.join(" · ");
+  }
+  if (item.completed_at) return relTime(item.completed_at) || fmtTime(item.completed_at);
+  return "completed";
+}
+
+function compactAttributionMeta(item) {
+  if (Number(item.contributor_count || 0) > 1) {
+    return `+${fmtInt(Number(item.contributor_count) - 1)}`;
+  }
+  return "";
+}
+
+function appendAttribution(cell, item, emptyText = "unattributed") {
+  if (item.primary_contributor) {
+    cell.appendChild(actorNode(item.primary_contributor, item.primary_contributor_login));
+    const meta = compactAttributionMeta(item);
+    if (meta) cell.appendChild(div("tu-meta", meta));
+  } else if (item.completed_by) {
+    cell.appendChild(actorNode(item.completed_by, item.completed_by_login));
+    cell.appendChild(div("tu-meta", item.completed_at ? (relTime(item.completed_at) || fmtTime(item.completed_at)) : "completed"));
+  } else {
+    cell.textContent = emptyText;
+  }
+}
+
 function tuButton(tuId, className = "tu-name") {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -1043,9 +1078,8 @@ function renderTuRows(items) {
     if (item.owner && item.status === "in_progress" && item.lease_expires_at) {
       owner.appendChild(actorNode(item.owner));
       owner.appendChild(div("tu-meta", "active claim"));
-    } else if (item.completed_by) {
-      owner.appendChild(actorNode(item.completed_by, item.completed_by_login));
-      owner.appendChild(div("tu-meta", "completed"));
+    } else if (item.primary_contributor || item.completed_by) {
+      appendAttribution(owner, item, "no contributor data");
     } else if (item.last_actor) {
       owner.appendChild(actorNode(item.last_actor));
       owner.appendChild(div("tu-meta", item.last_action || "last activity"));
@@ -1076,9 +1110,8 @@ function renderFuncRows(items) {
     const tu = document.createElement("td");
     tu.appendChild(tuButton(item.tu_id, "tu-meta"));
     const actor = document.createElement("td");
-    if (item.completed_by) {
-      actor.appendChild(actorNode(item.completed_by, item.completed_by_login));
-      if (item.completed_at) actor.appendChild(div("tu-meta", relTime(item.completed_at) || fmtTime(item.completed_at)));
+    if (item.primary_contributor || item.completed_by) {
+      appendAttribution(actor, item);
     } else {
       actor.textContent = "unattributed";
       actor.title = "No actor has been linked to this function yet.";
@@ -1335,6 +1368,50 @@ function kv(label, value) {
   return row;
 }
 
+function actorWithMeta(name, login, meta) {
+  const node = div("actor-stack");
+  node.appendChild(actorNode(name, login));
+  if (meta) node.appendChild(div("tu-meta", meta));
+  return node;
+}
+
+function latestChangeNode(item) {
+  if (!item.latest_change_by && !item.latest_change_at) return null;
+  const node = div("actor-stack");
+  if (item.latest_change_by) node.appendChild(actorNode(item.latest_change_by, item.latest_change_by_login));
+  if (item.latest_change_at) node.appendChild(div("tu-meta", `${fmtTime(item.latest_change_at)} (${relTime(item.latest_change_at)})`));
+  return node;
+}
+
+function contributorSection(item, title = "Contributors") {
+  const contributors = item.contributors || [];
+  const section = detailSection(`${title} (${contributors.length})`);
+  if (!contributors.length) {
+    section.appendChild(div("muted-text", "No surviving-line attribution available."));
+    return section;
+  }
+  for (const contributor of contributors) {
+    const row = div("contributor-row");
+    const main = div("contributor-main");
+    main.appendChild(actorNode(contributor.author, contributor.login));
+    main.appendChild(div("tu-meta", `${fmtInt(contributor.lines)} surviving lines · ${contributor.percent}%`));
+    const meter = div("contributor-meter");
+    const fill = div("contributor-meter-fill");
+    fill.style.width = `${Math.max(0, Math.min(100, Number(contributor.percent) || 0))}%`;
+    meter.appendChild(fill);
+    row.append(main, meter);
+    section.appendChild(row);
+  }
+  return section;
+}
+
+function functionRangeMeta(fn) {
+  if (!fn.line_range || fn.line_range.length !== 2) {
+    return fn.function_range_found === false ? "using containing file attribution" : null;
+  }
+  return `lines ${fmtInt(fn.line_range[0])}-${fmtInt(fn.line_range[1])}`;
+}
+
 function renderFunctionDetail(tu, fn) {
   const body = el("detailBody");
   body.innerHTML = "";
@@ -1347,11 +1424,19 @@ function renderFunctionDetail(tu, fn) {
   const facts = detailSection("Overview");
   facts.appendChild(kv("Translation Unit", tuButton(tu.id)));
   facts.appendChild(kv("Status", fn.status));
-  if (fn.completed_by) facts.appendChild(kv("Completed by", actorNode(fn.completed_by, fn.completed_by_login)));
+  if (fn.primary_contributor) {
+    facts.appendChild(kv("Primary contributor", actorWithMeta(fn.primary_contributor, fn.primary_contributor_login, attributionMeta(fn))));
+  } else if (fn.completed_by) {
+    facts.appendChild(kv("Completed by", actorNode(fn.completed_by, fn.completed_by_login)));
+  }
   if (fn.completed_at) facts.appendChild(kv("Completed", `${fmtTime(fn.completed_at)} (${relTime(fn.completed_at)})`));
+  const range = functionRangeMeta(fn);
+  if (range) facts.appendChild(kv("Attribution range", range));
   if (tu.source) facts.appendChild(kv("Source", tu.source));
   if (tu.dest_path) facts.appendChild(kv("Destination", tu.dest_path));
   body.appendChild(facts);
+
+  body.appendChild(contributorSection(fn));
 
   const related = detailSection("Containing TU");
   const row = div("dep-row clickable");
@@ -1380,7 +1465,13 @@ function renderDetail(d) {
   facts.appendChild(kv("Functions", fmtInt(d.n_funcs)));
   facts.appendChild(kv("Decfigs", fmtInt(d.n_decfigs)));
   facts.appendChild(kv("Active claim", d.owner ? actorNode(d.owner) : null));
-  if (d.completed_by) facts.appendChild(kv("Completed by", actorNode(d.completed_by, d.completed_by_login)));
+  if (d.primary_contributor) {
+    facts.appendChild(kv("Primary contributor", actorWithMeta(d.primary_contributor, d.primary_contributor_login, attributionMeta(d))));
+  } else if (d.completed_by) {
+    facts.appendChild(kv("Completed by", actorNode(d.completed_by, d.completed_by_login)));
+  }
+  const latest = latestChangeNode(d);
+  if (latest) facts.appendChild(kv("Latest change", latest));
   else if (d.last_actor) facts.appendChild(kv("Last actor", actorNode(d.last_actor)));
   facts.appendChild(kv("Updated", d.updated_at ? `${fmtTime(d.updated_at)} (${relTime(d.updated_at)})` : null));
   // Prefer the server-resolved repo_path: it points at the file that actually
@@ -1398,6 +1489,8 @@ function renderDetail(d) {
   }
   if (d.notes) facts.appendChild(kv("Notes", d.notes));
   body.appendChild(facts);
+
+  body.appendChild(contributorSection(d));
 
   // Dependencies
   const deps = detailSection(`Dependencies (${(d.deps || []).length})`);
@@ -1420,7 +1513,8 @@ function renderDetail(d) {
       const row = div("dep-row clickable");
       row.appendChild(span("dep-name", fn.name));
       row.appendChild(statusPill(fn.status));
-      if (fn.completed_by) row.appendChild(actorNode(fn.completed_by));
+      if (fn.primary_contributor) row.appendChild(actorNode(fn.primary_contributor, fn.primary_contributor_login));
+      else if (fn.completed_by) row.appendChild(actorNode(fn.completed_by, fn.completed_by_login));
       row.addEventListener("click", (event) => {
         if (event.target.closest("a, button")) return;
         openFunctionDetail(d, fn);

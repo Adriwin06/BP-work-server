@@ -65,6 +65,81 @@ def test_header_falls_back_to_cpp_sibling(decomp_repo):
     assert decomp_repo.history("b5-decomp/src/World/Foo.h")  # non-empty
 
 
+def test_contributors_use_surviving_lines(decomp_repo):
+    root = decomp_repo.root
+    foo = root / "src" / "World" / "Foo.cpp"
+    foo.write_text("int a = 1;\nint b = 2;\n")
+    _git(root, "add", ".")
+    _commit(root, "Adriwin06", "write base", when="2026-06-17T10:00:00")
+    foo.write_text("int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n")
+    _git(root, "add", ".")
+    _commit(root, "JeBobs", "append more", when="2026-06-17T11:00:00")
+
+    contributors = decomp_repo.contributors("b5-decomp/src/World/Foo.cpp")["contributors"]
+
+    assert contributors[0]["name"] == "JeBobs"
+    assert contributors[0]["lines"] == 3
+    assert contributors[1]["name"] == "Adriwin06"
+    assert contributors[1]["lines"] == 2
+
+
+def test_function_contributors_use_parsed_body_range(tmp_path):
+    root = tmp_path / "b5-decomp"
+    (root / "src" / "World").mkdir(parents=True)
+    foo = root / "src" / "World" / "Foo.cpp"
+    foo.write_text(
+        "void Foo::Other() {\n"
+        "  int old_line = 1;\n"
+        "}\n\n"
+        "void Foo::Run() {\n"
+        "  int a = 1;\n"
+        "  int b = 2;\n"
+        "}\n"
+    )
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "add", ".")
+    _commit(root, "Adriwin06", "write functions", when="2026-06-17T10:00:00")
+    foo.write_text(
+        "void Foo::Other() {\n"
+        "  int old_line = 1;\n"
+        "}\n\n"
+        "void Foo::Run() {\n"
+        "  int a = 10;\n"
+        "  int b = 20;\n"
+        "  int c = 3;\n"
+        "  int d = 4;\n"
+        "}\n"
+    )
+    _git(root, "add", ".")
+    _commit(root, "JeBobs", "expand run", when="2026-06-17T11:00:00")
+    repo = DecompRepo(root=root, branch="main")
+
+    result = repo.function_contributors("b5-decomp/src/World/Foo.cpp", "Foo::Run")
+
+    assert result["function_range_found"] is True
+    assert result["line_range"] == [5, 10]
+    assert result["contributors"][0]["name"] == "JeBobs"
+    assert result["contributors"][0]["lines"] == 4
+
+
+def test_qualified_function_does_not_match_unrelated_short_name(tmp_path):
+    root = tmp_path / "b5-decomp"
+    (root / "src" / "World").mkdir(parents=True)
+    foo = root / "src" / "World" / "Foo.cpp"
+    foo.write_text("namespace Other { void Reset() { int x = 1; } }\n")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "add", ".")
+    _commit(root, "Derneuere", "short reset", when="2026-06-17T10:00:00")
+    repo = DecompRepo(root=root, branch="main")
+
+    result = repo.function_contributors("b5-decomp/src/World/Foo.cpp", "BrnAI::AICar::Reset")
+
+    assert result["function_range_found"] is False
+    assert result["line_range"] is None
+
+
 def test_missing_file_is_empty(decomp_repo):
     assert decomp_repo.history("b5-decomp/src/World/Missing.cpp") == []
     assert decomp_repo.resolve("b5-decomp/src/World/Missing.cpp") == (None, None)

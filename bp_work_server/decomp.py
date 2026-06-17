@@ -16,10 +16,14 @@ sibling, which also fixes the destination links that used to 404 on ``.h`` TUs.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
+from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # The decomp source lives next to the workflow checkout by default; both sit in
 # the persistent data dir so they survive code deploys.
@@ -71,6 +75,9 @@ class DecompRepo:
         self._lock = threading.Lock()
         # path-relative-to-root -> {"path": existing_path|None, "history": [...]}
         self._cache: dict[str, dict] = {}
+        self._blame_cache: dict[str, list[dict[str, Any]]] = {}
+        self._source_cache: dict[str, str] = {}
+        self._function_range_cache: dict[tuple[str, str], tuple[int, int] | None] = {}
         self._refreshed_at = 0.0
 
     @property
@@ -106,6 +113,9 @@ class DecompRepo:
             if ok is not None:
                 self._git("reset", "--hard", f"origin/{self.branch}")
                 self._cache.clear()
+                self._blame_cache.clear()
+                self._source_cache.clear()
+                self._function_range_cache.clear()
             # Record the attempt regardless so a flaky network does not make
             # every request pay the fetch cost.
             self._refreshed_at = time.time()
@@ -169,6 +179,246 @@ class DecompRepo:
         with self._lock:
             self._cache[rel] = record
         return record
+
+    def revision(self) -> str | None:
+        """Current checked-out commit for cache keys."""
+        self._maybe_refresh()
+        out = self._git("rev-parse", "HEAD")
+        return out.strip() if out else None
+
+    def _source(self, path: str | None) -> str:
+        if not path:
+            return ""
+        with self._lock:
+            hit = self._source_cache.get(path)
+        if hit is not None:
+            return hit
+        try:
+            text = (self.root / path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            text = ""
+        with self._lock:
+            self._source_cache[path] = text
+        return text
+
+    def _blame(self, path: str | None) -> list[dict[str, Any]]:
+        if not path:
+            return []
+        self._maybe_refresh()
+        with self._lock:
+            hit = self._blame_cache.get(path)
+        if hit is not None:
+            return hit
+        out = self._git("blame", "--line-porcelain", "--", path)
+        records: list[dict[str, Any]] = []
+        current: dict[str, Any] = {}
+        for line in (out or "").splitlines():
+            if line.startswith("author "):
+                current["name"] = line.removeprefix("author ").strip() or None
+            elif line.startswith("author-mail "):
+                email = line.removeprefix("author-mail ").strip()
+                current["email"] = email.strip("<>") or None
+            elif line.startswith("author-time "):
+                value = line.removeprefix("author-time ").strip()
+                if value.isdigit():
+                    current["time"] = int(value)
+            elif line.startswith("\t"):
+                records.append(dict(current))
+                current.clear()
+        with self._lock:
+            self._blame_cache[path] = records
+        return records
+
+    @staticmethod
+    def _line_year(record: dict[str, Any]) -> int | None:
+        ts = record.get("time")
+        if not isinstance(ts, int):
+            return None
+        return datetime.fromtimestamp(ts, UTC).year
+
+    @staticmethod
+    def _contributors_from_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str | None, str | None], int] = Counter()
+        total = 0
+        for line in lines:
+            year = DecompRepo._line_year(line)
+            if year is not None and year < MIN_COMMIT_YEAR:
+                continue
+            name = line.get("name")
+            email = line.get("email")
+            if not name and not email:
+                continue
+            grouped[(name, email)] += 1
+            total += 1
+        if total <= 0:
+            return []
+        contributors = [
+            {
+                "name": name,
+                "email": email,
+                "lines": lines,
+                "percent": round((lines / total) * 100, 1),
+            }
+            for (name, email), lines in grouped.items()
+        ]
+        contributors.sort(key=lambda item: (-item["lines"], item.get("name") or "", item.get("email") or ""))
+        return contributors
+
+    def contributors(
+        self, dest_path: str | None, line_range: tuple[int, int] | None = None
+    ) -> dict[str, Any]:
+        """Surviving-line contributors for a destination file or line range."""
+        record = self._record(dest_path)
+        path = record["path"]
+        blame = self._blame(path)
+        if line_range and blame:
+            start, end = line_range
+            start = max(start, 1)
+            end = min(end, len(blame))
+            blame = blame[start - 1 : end] if start <= end else []
+        contributors = self._contributors_from_lines(blame)
+        return {
+            "path": path,
+            "line_range": list(line_range) if line_range else None,
+            "basis": "surviving_lines",
+            "contributors": contributors,
+        }
+
+    @staticmethod
+    def _sanitize_cpp(text: str) -> str:
+        chars = list(text)
+        i = 0
+        state = "code"
+        while i < len(chars):
+            ch = chars[i]
+            nxt = chars[i + 1] if i + 1 < len(chars) else ""
+            if state == "code":
+                if ch == "/" and nxt == "/":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "line_comment"
+                    continue
+                if ch == "/" and nxt == "*":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "block_comment"
+                    continue
+                if ch == '"':
+                    chars[i] = " "
+                    i += 1
+                    state = "string"
+                    continue
+                if ch == "'":
+                    chars[i] = " "
+                    i += 1
+                    state = "char"
+                    continue
+            elif state == "line_comment":
+                if ch == "\n":
+                    state = "code"
+                else:
+                    chars[i] = " "
+            elif state == "block_comment":
+                if ch == "*" and nxt == "/":
+                    chars[i] = chars[i + 1] = " "
+                    i += 2
+                    state = "code"
+                    continue
+                if ch != "\n":
+                    chars[i] = " "
+            elif state in {"string", "char"}:
+                quote = '"' if state == "string" else "'"
+                if ch == "\\" and i + 1 < len(chars):
+                    chars[i] = " "
+                    if chars[i + 1] != "\n":
+                        chars[i + 1] = " "
+                    i += 2
+                    continue
+                if ch == quote:
+                    state = "code"
+                if ch != "\n":
+                    chars[i] = " "
+            i += 1
+        return "".join(chars)
+
+    @staticmethod
+    def _line_number_at(text: str, index: int) -> int:
+        return text.count("\n", 0, index) + 1
+
+    @staticmethod
+    def _find_matching(text: str, start: int, open_ch: str, close_ch: str) -> int | None:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == open_ch:
+                depth += 1
+            elif text[i] == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return i
+        return None
+
+    @staticmethod
+    def _function_patterns(function_name: str) -> list[str]:
+        names = [function_name.strip()]
+        patterns: list[str] = []
+        for name in names:
+            if not name:
+                continue
+            if "::" in name:
+                parts = [re.escape(part) for part in name.split("::") if part]
+                patterns.append(r"(?<![\w:])" + r"\s*::\s*".join(parts) + r"(?![\w:])")
+            else:
+                patterns.append(r"(?<![\w:])" + re.escape(name) + r"(?![\w:])")
+        return list(dict.fromkeys(patterns))
+
+    def function_range(self, dest_path: str | None, function_name: str) -> tuple[int, int] | None:
+        """Best-effort C++ function body range, 1-based inclusive line numbers."""
+        record = self._record(dest_path)
+        path = record["path"]
+        if not path or not function_name:
+            return None
+        key = (path, function_name)
+        with self._lock:
+            if key in self._function_range_cache:
+                return self._function_range_cache[key]
+        text = self._source(path)
+        clean = self._sanitize_cpp(text)
+        found: tuple[int, int] | None = None
+        for pattern in self._function_patterns(function_name):
+            for match in re.finditer(pattern, clean):
+                i = match.end()
+                while i < len(clean) and clean[i].isspace():
+                    i += 1
+                if i >= len(clean) or clean[i] != "(":
+                    continue
+                close_paren = self._find_matching(clean, i, "(", ")")
+                if close_paren is None:
+                    continue
+                j = close_paren + 1
+                while j < len(clean):
+                    ch = clean[j]
+                    if ch == "{":
+                        close_brace = self._find_matching(clean, j, "{", "}")
+                        if close_brace is None:
+                            break
+                        found = (self._line_number_at(clean, match.start()), self._line_number_at(clean, close_brace))
+                        break
+                    if ch in ";":
+                        break
+                    j += 1
+                if found:
+                    break
+            if found:
+                break
+        with self._lock:
+            self._function_range_cache[key] = found
+        return found
+
+    def function_contributors(self, dest_path: str | None, function_name: str) -> dict[str, Any]:
+        line_range = self.function_range(dest_path, function_name)
+        result = self.contributors(dest_path, line_range=line_range)
+        result["function_range_found"] = line_range is not None
+        return result
 
     def history(self, dest_path: str | None) -> list[dict[str, str | None]]:
         """Commits (newest-first) that touched the file, from MIN_COMMIT_YEAR on.
