@@ -40,6 +40,17 @@ def main() -> None:
     )
     reconcile_p.add_argument("--apply", action="store_true", help="Write reconstructed events.")
 
+    warm_p = sub.add_parser(
+        "warm-attribution-cache",
+        help="Precompute local-git surviving-line attribution for reviewed work.",
+    )
+    warm_p.add_argument("--decomp-root", required=True, help="Path to a local b5-decomp checkout.")
+    warm_p.add_argument("--branch", help="Branch/ref to fetch before scanning.")
+    warm_p.add_argument("--files-only", action="store_true", help="Only cache completed TU attribution.")
+    warm_p.add_argument(
+        "--functions-only", action="store_true", help="Only cache reviewed function attribution."
+    )
+
     serve_p = sub.add_parser("serve", help="Run the API server.")
     serve_p.add_argument("--host", default="127.0.0.1")
     serve_p.add_argument("--port", type=int, default=8765)
@@ -111,6 +122,29 @@ def main() -> None:
         print(f"  skipped unresolved actor: {result.skipped_unresolved_actor}")
         if not args.apply:
             print("  re-run with --apply to write")
+        return
+
+    if args.cmd == "warm-attribution-cache":
+        if args.files_only and args.functions_only:
+            parser.error("--files-only and --functions-only cannot be used together")
+        from bp_work_server.attribution_cache import warm_attribution_cache
+        from bp_work_server.decomp import DecompRepo
+
+        def progress(kind: str, current: int, total: int, label: str) -> None:
+            print(f"  {kind}: {current}/{total} {label}", flush=True)
+
+        decomp = DecompRepo(root=args.decomp_root, branch=args.branch)
+        result = warm_attribution_cache(
+            store,
+            decomp,
+            include_files=not args.functions_only,
+            include_functions=not args.files_only,
+            progress=progress,
+        )
+        print("attribution cache warmed")
+        print(f"  repo rev: {result.repo_rev}")
+        print(f"  files cached: {result.files_cached}/{result.file_targets}")
+        print(f"  functions cached: {result.functions_cached}/{result.function_targets}")
         return
 
     if args.cmd == "worker":

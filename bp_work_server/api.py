@@ -91,19 +91,24 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             app.state.dashboard_cache["expires_at"] = 0.0
             app.state.dashboard_cache["data"] = None
 
-    def cached_dashboard_state(store: WorkStore) -> dict:
+    def cached_dashboard_state(store: WorkStore, attribution_repo_rev: str | None = None) -> dict:
         now = time.monotonic()
         cache = app.state.dashboard_cache
         data = cache.get("data")
-        if data is not None and now < cache["expires_at"]:
+        if data is not None and cache.get("attribution_repo_rev") == attribution_repo_rev and now < cache["expires_at"]:
             return data
         with app.state.dashboard_cache_lock:
             now = time.monotonic()
             data = cache.get("data")
-            if data is not None and now < cache["expires_at"]:
+            if (
+                data is not None
+                and cache.get("attribution_repo_rev") == attribution_repo_rev
+                and now < cache["expires_at"]
+            ):
                 return data
-            data = store.dashboard_state()
+            data = store.dashboard_state(attribution_repo_rev=attribution_repo_rev)
             cache["data"] = data
+            cache["attribution_repo_rev"] = attribution_repo_rev
             cache["expires_at"] = now + 1.0
             return data
 
@@ -391,8 +396,14 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
         return EventsResponse(events=store.events(after=after, limit=limit))
 
     @app.get("/dashboard/state")
-    def dashboard_state(store: WorkStore = Depends(get_store)) -> dict:
-        return cached_dashboard_state(store)
+    async def dashboard_state(store: WorkStore = Depends(get_store)) -> dict:
+        decomp: DecompRepo = app.state.decomp
+        repo_rev = (
+            await asyncio.to_thread(decomp.revision)
+            if hasattr(decomp, "revision")
+            else None
+        )
+        return cached_dashboard_state(store, attribution_repo_rev=repo_rev)
 
     @app.get("/api/facets")
     def facets(store: WorkStore = Depends(get_store)) -> dict:

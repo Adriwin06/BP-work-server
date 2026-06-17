@@ -257,6 +257,7 @@ async function refresh() {
 
 function render(data) {
   state.actorProfiles = data.actor_profiles || {};
+  state.attributionCache = data.attribution_cache || {};
   const totals = data.totals || {};
   const counts = data.counts || {};
   text("subtitle", `${fmtInt(totals.tus)} translation units · ${fmtInt(totals.funcs)} functions`);
@@ -293,6 +294,14 @@ function renderAgents(agents) {
     root.textContent = "No users registered.";
     return;
   }
+  const coverage = state.attributionCache || {};
+  const fullContributionCoverage = Boolean(coverage.file_complete && coverage.function_complete);
+  const contributionLabel = fullContributionCoverage ? "contributed to" : "contributed to cached";
+  const coverageText = fullContributionCoverage
+    ? ""
+    : ` (cache ${fmtInt(coverage.file_cached || 0)}/${fmtInt(coverage.file_total || 0)} TUs, ${fmtInt(
+        coverage.function_cached || 0,
+      )}/${fmtInt(coverage.function_total || 0)} funcs)`;
   for (const agent of agents) {
     const row = div("agent-row");
     row.classList.toggle("agent-idle", !agent.has_active_work && Number(agent.total || 0) === 0);
@@ -313,9 +322,11 @@ function renderAgents(agents) {
     row.appendChild(
       div(
         "agent-meta",
-        `${fmtInt(agent.total)} active | ${fmtInt(agent.completed_tus ?? agent.completed)} TUs / ${fmtInt(
+        `${fmtInt(agent.total)} active | completed ${fmtInt(agent.completed_tus ?? agent.completed)} TUs / ${fmtInt(
           agent.completed_funcs,
-        )} funcs completed | lease ${shortTime(agent.lease_expires_at)} | last ${
+        )} funcs | ${contributionLabel} ${fmtInt(agent.contributed_tus || 0)} TUs / ${fmtInt(
+          agent.contributed_funcs || 0,
+        )} funcs${coverageText} | lease ${shortTime(agent.lease_expires_at)} | last ${
           relTime(agent.last_activity || agent.last_update || agent.last_seen) || "never"
         }`,
       ),

@@ -143,6 +143,13 @@ def parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def login_from_noreply_email(email: str | None) -> str | None:
+    if not email or "users.noreply.github.com" not in email.lower():
+        return None
+    local = email.split("@", 1)[0]
+    return local.split("+", 1)[-1] or None
+
+
 class WorkStore:
     def __init__(self, db_path: str | Path, users_db_path: str | Path | None = None):
         self.db_path = Path(db_path)
@@ -821,7 +828,7 @@ class WorkStore:
                 for row in rows
             ]
 
-    def dashboard_state(self) -> dict[str, Any]:
+    def dashboard_state(self, attribution_repo_rev: str | None = None) -> dict[str, Any]:
         with self.connect() as con:
             self._expire_leases(con)
             counts = {key: 0 for key in TU_STATUSES}
@@ -897,6 +904,10 @@ class WorkStore:
                 actor = self.canonical_actor(row["completed_by"], aliases)
                 if actor:
                     completed_funcs_by_agent[actor] += row["completed"]
+            attribution_cache_coverage = self._attribution_cache_coverage(con, attribution_repo_rev)
+            contributed_tus_by_agent, contributed_funcs_by_agent = self._contribution_counts_from_cache(
+                con, aliases, attribution_repo_rev
+            )
             last_activity_by_agent: dict[str, str] = {}
             for row in con.execute(
                 """
@@ -959,6 +970,8 @@ class WorkStore:
                 | set(active_agents)
                 | set(completed_by_agent)
                 | set(completed_funcs_by_agent)
+                | set(contributed_tus_by_agent)
+                | set(contributed_funcs_by_agent)
             )
             agents = []
             for name in sorted(
@@ -987,6 +1000,8 @@ class WorkStore:
                         "completed": completed_by_agent.get(name, 0),
                         "completed_tus": completed_by_agent.get(name, 0),
                         "completed_funcs": completed_funcs_by_agent.get(name, 0),
+                        "contributed_tus": contributed_tus_by_agent.get(name, 0),
+                        "contributed_funcs": contributed_funcs_by_agent.get(name, 0),
                         "lease_expires_at": active.get("lease_expires_at"),
                         "last_update": active.get("last_update"),
                         "last_activity": last_activity_by_agent.get(
@@ -1034,6 +1049,7 @@ class WorkStore:
                     "func_percent": self._percent(done_funcs, total_funcs),
                 },
                 "agents": agents,
+                "attribution_cache": attribution_cache_coverage,
                 "actor_profiles": profiles,
                 "active_work": active_work,
                 "blocked": blocked,
@@ -1844,6 +1860,131 @@ class WorkStore:
             int(username[:1].isupper()),
             -sum(1 for ch in username if ch.isupper()),
         )
+
+    def _contribution_counts_from_cache(
+        self,
+        con: sqlite3.Connection,
+        aliases: dict[str, str],
+        repo_rev: str | None,
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        contributed_tus: dict[str, set[str]] = defaultdict(set)
+        contributed_funcs: dict[str, set[str]] = defaultdict(set)
+        if not repo_rev:
+            return {}, {}
+
+        def contributor_actor(contributor: dict[str, Any]) -> str | None:
+            email = str(contributor.get("email") or "").strip()
+            for candidate in (login_from_noreply_email(email), email, contributor.get("name")):
+                cleaned = str(candidate or "").strip()
+                if not cleaned:
+                    continue
+                actor = self.canonical_actor(cleaned, aliases)
+                if actor:
+                    return actor
+            return None
+
+        for row in con.execute(
+            """
+            SELECT t.id AS tu_id, ac.payload_json
+            FROM attribution_cache ac
+            JOIN tu t ON t.dest_path=ac.dest_path
+            WHERE ac.scope='file'
+              AND ac.repo_rev=?
+              AND t.status='done'
+            """,
+            (repo_rev,),
+        ):
+            payload = json.loads(row["payload_json"] or "{}")
+            for contributor in (payload.get("contributors") or {}).get("contributors") or []:
+                if int(contributor.get("lines") or 0) <= 0:
+                    continue
+                actor = contributor_actor(contributor)
+                if actor:
+                    contributed_tus[actor].add(row["tu_id"])
+
+        for row in con.execute(
+            """
+            SELECT f.name AS func_name, ac.payload_json
+            FROM attribution_cache ac
+            JOIN tu t ON t.dest_path=ac.dest_path
+            JOIN func f ON f.tu_id=t.id AND f.name=ac.function_name
+            WHERE ac.scope='function'
+              AND ac.repo_rev=?
+              AND f.status!='todo'
+            """,
+            (repo_rev,),
+        ):
+            payload = json.loads(row["payload_json"] or "{}")
+            for contributor in payload.get("contributors") or []:
+                if int(contributor.get("lines") or 0) <= 0:
+                    continue
+                actor = contributor_actor(contributor)
+                if actor:
+                    contributed_funcs[actor].add(row["func_name"])
+
+        return (
+            {actor: len(tus) for actor, tus in contributed_tus.items()},
+            {actor: len(funcs) for actor, funcs in contributed_funcs.items()},
+        )
+
+    def _attribution_cache_coverage(
+        self, con: sqlite3.Connection, repo_rev: str | None
+    ) -> dict[str, Any]:
+        done_tus = con.execute(
+            "SELECT COUNT(*) FROM tu WHERE status='done' AND dest_path IS NOT NULL"
+        ).fetchone()[0]
+        done_funcs = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM func f
+            JOIN tu t ON t.id=f.tu_id
+            WHERE f.status!='todo'
+              AND t.dest_path IS NOT NULL
+              AND t.dest_path != ''
+            """
+        ).fetchone()[0]
+        if not repo_rev:
+            return {
+                "repo_rev": None,
+                "file_cached": 0,
+                "file_total": done_tus,
+                "function_cached": 0,
+                "function_total": done_funcs,
+                "file_complete": False,
+                "function_complete": False,
+            }
+        file_cached = con.execute(
+            """
+            SELECT COUNT(DISTINCT t.id)
+            FROM attribution_cache ac
+            JOIN tu t ON t.dest_path=ac.dest_path
+            WHERE ac.scope='file'
+              AND ac.repo_rev=?
+              AND t.status='done'
+            """,
+            (repo_rev,),
+        ).fetchone()[0]
+        function_cached = con.execute(
+            """
+            SELECT COUNT(DISTINCT f.name)
+            FROM attribution_cache ac
+            JOIN tu t ON t.dest_path=ac.dest_path
+            JOIN func f ON f.tu_id=t.id AND f.name=ac.function_name
+            WHERE ac.scope='function'
+              AND ac.repo_rev=?
+              AND f.status!='todo'
+            """,
+            (repo_rev,),
+        ).fetchone()[0]
+        return {
+            "repo_rev": repo_rev,
+            "file_cached": file_cached,
+            "file_total": done_tus,
+            "function_cached": function_cached,
+            "function_total": done_funcs,
+            "file_complete": done_tus > 0 and file_cached >= done_tus,
+            "function_complete": done_funcs > 0 and function_cached >= done_funcs,
+        }
 
     def _percent(self, value: int, total: int) -> float:
         if total <= 0:

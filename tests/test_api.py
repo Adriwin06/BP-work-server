@@ -115,6 +115,112 @@ def test_dashboard_lists_registered_agents_without_claims(tmp_path):
     }
 
 
+def test_dashboard_agents_include_cached_contribution_counts(tmp_path):
+    client, store = make_client(tmp_path)
+    store.create_worker("Adriwin", github_username="Adriwin06")
+    store.create_worker("Derneuere", github_username="Derneuere")
+    with store.users_connect() as con:
+        con.execute(
+            "INSERT INTO worker_alias(alias, username, kind) VALUES(?, ?, ?)",
+            ("Niaz", "Derneuere", "git-name"),
+        )
+        con.execute(
+            "INSERT INTO worker_alias(alias, username, kind) VALUES(?, ?, ?)",
+            ("tigrexspalterlp@gmail.com", "Derneuere", "git-email"),
+        )
+    with store.connect() as con:
+        con.execute("UPDATE tu SET status='done' WHERE id IN ('GameSource/A.cpp', 'GameSource/B.cpp')")
+        con.execute("UPDATE func SET status='reviewed' WHERE name IN ('A::Run', 'B::Run')")
+        con.execute(
+            """
+            INSERT INTO attribution_cache(
+                scope, dest_path, function_name, repo_rev, payload_json, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "file",
+                "b5-decomp/src/GameSource/A.cpp",
+                "",
+                "rev-current",
+                '{"contributors":{"contributors":[{"name":"Niaz","email":"tigrexspalterlp@gmail.com","lines":5}]}}',
+                iso(),
+            ),
+        )
+        con.execute(
+            """
+            INSERT INTO attribution_cache(
+                scope, dest_path, function_name, repo_rev, payload_json, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "file",
+                "b5-decomp/src/GameSource/B.cpp",
+                "",
+                "rev-current",
+                '{"contributors":{"contributors":[{"name":"github-actions","email":"76881633+Adriwin06@users.noreply.github.com","lines":7}]}}',
+                iso(),
+            ),
+        )
+        con.execute(
+            """
+            INSERT INTO attribution_cache(
+                scope, dest_path, function_name, repo_rev, payload_json, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "file",
+                "b5-decomp/src/GameSource/B.cpp",
+                "",
+                "rev-old",
+                '{"contributors":{"contributors":[{"name":"Niaz","email":"tigrexspalterlp@gmail.com","lines":5}]}}',
+                iso(),
+            ),
+        )
+        for name, dest in (
+            ("A::Run", "b5-decomp/src/GameSource/A.cpp"),
+            ("B::Run", "b5-decomp/src/GameSource/B.cpp"),
+        ):
+            con.execute(
+                """
+                INSERT INTO attribution_cache(
+                    scope, dest_path, function_name, repo_rev, payload_json, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "function",
+                    dest,
+                    name,
+                    "rev-current",
+                    '{"contributors":[{"name":"Niaz","email":"tigrexspalterlp@gmail.com","lines":3}]}',
+                    iso(),
+                ),
+            )
+
+    class FakeDecomp:
+        def revision(self):
+            return "rev-current"
+
+    client.app.state.decomp = FakeDecomp()
+
+    state = client.get("/dashboard/state").json()
+    derneuere = next(agent for agent in state["agents"] if agent["name"] == "Derneuere")
+    adriwin = next(agent for agent in state["agents"] if agent["name"] == "Adriwin")
+
+    assert derneuere["contributed_tus"] == 1
+    assert derneuere["contributed_funcs"] == 2
+    assert adriwin["contributed_tus"] == 1
+    assert state["attribution_cache"]["file_cached"] == 2
+    assert state["attribution_cache"]["file_total"] == 2
+    assert state["attribution_cache"]["function_cached"] == 2
+    assert state["attribution_cache"]["function_total"] == 2
+    assert state["attribution_cache"]["file_complete"] is True
+    assert state["attribution_cache"]["function_complete"] is True
+
+
 def test_file_history_uses_registered_actor_aliases(tmp_path):
     client, store = make_client(tmp_path)
     store.create_worker("Adriwin", github_username="Adriwin06")
