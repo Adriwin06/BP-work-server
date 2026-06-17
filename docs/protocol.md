@@ -28,7 +28,8 @@ ids and hands them out privately.
   private/trusted deployment, in which case the request body `agent` is used.
 - **Admin is a role on a worker id** (`is_admin`), not a separate shared secret — there is
   no `BP_WORK_ADMIN_TOKEN`. The `/admin/*` endpoints (mint/list/revoke ids, import, sync,
-  reset) require an id whose worker has the admin role: a non-admin id gets `403`, a
+  reset, event reconciliation) require an id whose worker has the admin role: a non-admin
+  id gets `403`, a
   missing/invalid id `401`. Bootstrap the first admin on the host with the direct-DB CLI
   `bp-work-server worker add <name> --admin` (needs no existing admin).
 - Revoking an id immediately blocks it; existing claims are unaffected until their lease
@@ -85,6 +86,32 @@ Lists workers (`token`, `username`, `active`, `is_admin`, `created_at`, `last_se
 ### `DELETE /admin/workers/{token}`  (admin)
 
 Revokes a worker id (`204`; `404` if unknown). Revoked ids can no longer authenticate.
+
+### `POST /admin/reconcile-events`  (admin)
+
+Reconstructs missing live `review_pass` events from the local `b5-decomp` git history.
+Use this only for completed work that reached `b5-decomp` without the normal workflow
+posting its review event to the server. The call is a dry run unless `apply` is true.
+
+The reconciler uses server identity aliases and worker GitHub overrides, skips real
+workflow events that already exist, and marks appended events as reconstructed from
+`b5-decomp` so the dashboard can distinguish them from normal workflow events.
+
+```json
+// request
+{ "actors": ["JeBobs"], "apply": false }
+// response
+{
+  "applied": false,
+  "summary": {
+    "scanned_tus": 366,
+    "scanned_commits": 535,
+    "inserted": 0,
+    "skipped_existing_real": 9,
+    "skipped_existing_reconstructed": 210
+  }
+}
+```
 
 ### `GET /next?n=5&goal=boot-trace`
 
@@ -298,6 +325,7 @@ Mapping:
 | `work review <tu> --verdict pass` | `POST /tu/{tu}/review` |
 | `work block <tu>` | `POST /tu/{tu}/block` |
 | `work unblock <tu>` | `POST /tu/{tu}/unblock` |
+| `work server-reconcile-events --actor NAME [--apply]` | `POST /admin/reconcile-events` |
 | `work server-reset [--to REF]` | `POST /admin/sync` with `reset=true` |
 
 The local `ledger.sqlite` can remain a cache for dossiers, dependencies, and

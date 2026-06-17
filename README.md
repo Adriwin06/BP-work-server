@@ -136,6 +136,26 @@ GET /api/funcs            # search functions (q, status, tu, limit, offset)
 `sort` accepts `id`, `funcs`, `updated`, `status`, or `queue` (dependency-ranked,
 matching `next`).
 
+## Event Reconciliation
+
+If completed commits reached `b5-decomp` without the normal workflow posting live review
+events to the server, an admin can reconstruct only the missing `review_pass` events from
+the local git history. Dry-run first:
+
+```powershell
+bp-work-server --db data\bp-work.sqlite3 reconcile-events --actor JeBobs
+bp-work-server --db data\bp-work.sqlite3 reconcile-events --actor JeBobs --apply
+```
+
+From the workflow repo, use the admin wrapper:
+
+```powershell
+work server-reconcile-events --actor JeBobs [--apply]
+```
+
+Reconstructed events are marked as coming from `b5-decomp`; real workflow events that
+already exist are skipped.
+
 ## Branding
 
 The header shows `/static/logo.png` if present and falls back to a `B5` mark

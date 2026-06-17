@@ -28,6 +28,8 @@ from bp_work_server.models import (
     ImportResponse,
     NextResponse,
     ReviewRequest,
+    ReconcileEventsRequest,
+    ReconcileEventsResponse,
     SnapshotResponse,
     StatusUpdateRequest,
     SyncRequest,
@@ -37,6 +39,7 @@ from bp_work_server.models import (
     WorkerResponse,
 )
 from bp_work_server.store import WorkStore
+from bp_work_server.reconcile_events import reconcile_review_events_from_decomp
 from bp_work_server.sync import sync_workflow_repo
 
 
@@ -206,6 +209,31 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    @app.post("/admin/reconcile-events", response_model=ReconcileEventsResponse)
+    async def reconcile_events(
+        req: ReconcileEventsRequest,
+        _admin: str = Depends(require_admin_worker),
+        store: WorkStore = Depends(get_store),
+    ) -> ReconcileEventsResponse:
+        result = await asyncio.to_thread(
+            reconcile_review_events_from_decomp,
+            store,
+            app.state.decomp,
+            actors=set(req.actors or []),
+            apply=req.apply,
+        )
+        invalidate_dashboard_cache()
+        return ReconcileEventsResponse(
+            scanned_tus=result.scanned_tus,
+            scanned_commits=result.scanned_commits,
+            inserted=result.inserted,
+            skipped_existing_real=result.skipped_existing_real,
+            skipped_existing_reconstructed=result.skipped_existing_reconstructed,
+            skipped_actor_filter=result.skipped_actor_filter,
+            skipped_unresolved_actor=result.skipped_unresolved_actor,
+            applied=req.apply,
+        )
 
     @app.get("/export/status")
     def export_status(store: WorkStore = Depends(get_store)) -> dict:
