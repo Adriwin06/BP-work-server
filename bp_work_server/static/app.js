@@ -19,6 +19,7 @@ const state = {
     limit: 50,
     offset: 0,
     total: 0,
+    items: [],
     searchTimer: null,
     requestId: 0,
   },
@@ -983,8 +984,9 @@ async function loadExplorer() {
     const data = await fetchJson(`${path}?${explorerParams()}`, 15000);
     if (requestId !== ex.requestId) return;
     ex.total = data.total || 0;
-    if (ex.tab === "funcs") renderFuncRows(data.items || []);
-    else renderTuRows(data.items || []);
+    ex.items = data.items || [];
+    if (ex.tab === "funcs") renderFuncRows(ex.items);
+    else renderTuRows(ex.items);
     renderExplorerFoot();
   } catch (error) {
     if (requestId !== ex.requestId) return;
@@ -997,6 +999,15 @@ async function loadExplorer() {
     row.appendChild(cell);
     el("explorerBody").appendChild(row);
   }
+}
+
+function refreshExplorerTuRow(detail) {
+  const ex = state.explorer;
+  if (ex.tab !== "tus" || !detail || !detail.id || !Array.isArray(ex.items)) return;
+  const index = ex.items.findIndex((item) => item.id === detail.id);
+  if (index < 0) return;
+  ex.items[index] = { ...ex.items[index], ...detail };
+  renderTuRows(ex.items);
 }
 
 function renderExplorerFoot() {
@@ -1329,7 +1340,9 @@ async function openDetail(tuId, options = {}) {
   text("detailTitle", tuId);
   el("detailBody").innerHTML = '<p class="muted-text">Loading…</p>';
   try {
-    renderDetail(await fetchJson(`/api/tu?id=${encodeURIComponent(tuId)}`, 15000));
+    const detail = await fetchJson(`/api/tu?id=${encodeURIComponent(tuId)}`, 15000);
+    refreshExplorerTuRow(detail);
+    renderDetail(detail);
   } catch (error) {
     el("detailBody").innerHTML = "";
     el("detailBody").appendChild(div("muted-text", `Failed to load: ${error.message}`));
