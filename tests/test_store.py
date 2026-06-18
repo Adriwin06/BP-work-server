@@ -244,6 +244,65 @@ def test_import_seeds_only_durable_statuses(tmp_path):
     assert store.dashboard_state()["active_work"] == []
 
 
+def test_import_derives_destinations_for_class_tus(tmp_path):
+    progress = tmp_path / "progress"
+    progress.mkdir()
+    (progress / "tu_index.json").write_text(
+        json.dumps(
+            {
+                "class:BrnGameState::ScoringSystem": {
+                    "source": "class",
+                    "n_funcs": 1,
+                    "functions": ["BrnGameState::ScoringSystem::AddPlayer"],
+                },
+                "class:<global>": {
+                    "source": "class",
+                    "n_funcs": 1,
+                    "functions": ["GlobalFn"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (progress / "status.json").write_text(json.dumps({"tu": {}}), encoding="utf-8")
+    store = WorkStore(tmp_path / "work.sqlite3")
+    store.migrate()
+
+    store.import_workflow(tmp_path, reset=True)
+
+    with store.connect() as con:
+        rows = {
+            row["id"]: row["dest_path"]
+            for row in con.execute("SELECT id, dest_path FROM tu ORDER BY id")
+        }
+    assert (
+        rows["class:BrnGameState::ScoringSystem"]
+        == "b5-decomp/src/classes/BrnGameState/ScoringSystem.cpp"
+    )
+    assert rows["class:<global>"] == "b5-decomp/src/classes/global.cpp"
+
+
+def test_migrate_backfills_missing_class_destinations(tmp_path):
+    store = WorkStore(tmp_path / "work.sqlite3")
+    store.migrate()
+    with store.connect() as con:
+        con.execute(
+            """
+            INSERT INTO tu(id, source, status, n_funcs, n_decfigs, dest_path, updated_at)
+            VALUES('class:Utility::Parser', 'class', 'todo', 1, 0, NULL, ?)
+            """,
+            (iso(),),
+        )
+
+    store.migrate()
+
+    with store.connect() as con:
+        row = con.execute(
+            "SELECT dest_path FROM tu WHERE id='class:Utility::Parser'"
+        ).fetchone()
+    assert row["dest_path"] == "b5-decomp/src/classes/Utility/Parser.cpp"
+
+
 def test_live_claim_survives_resync(tmp_path):
     """A re-sync (no reset) must not stomp a live server claim back to a snapshot state."""
     store = WorkStore(tmp_path / "work.sqlite3")

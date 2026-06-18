@@ -221,6 +221,69 @@ def test_dashboard_agents_include_cached_contribution_counts(tmp_path):
     assert state["attribution_cache"]["function_complete"] is True
 
 
+def test_dashboard_state_warms_missing_attribution_cache(tmp_path):
+    client, store = make_client(tmp_path)
+    store.create_worker("Derneuere")
+    with store.connect() as con:
+        con.execute("UPDATE tu SET status='done' WHERE id='GameSource/A.cpp'")
+        con.execute("UPDATE func SET status='reviewed' WHERE name='A::Run'")
+
+    class FakeDecomp:
+        def revision(self):
+            return "rev-auto"
+
+        def history(self, dest_path):
+            return [
+                {
+                    "date": "2026-06-17T10:00:00+00:00",
+                    "name": "Derneuere",
+                    "email": "12345+Derneuere@users.noreply.github.com",
+                }
+            ]
+
+        def contributors(self, dest_path):
+            return {
+                "path": dest_path.removeprefix("b5-decomp/"),
+                "basis": "surviving_lines",
+                "contributors": [
+                    {
+                        "name": "Derneuere",
+                        "email": "12345+Derneuere@users.noreply.github.com",
+                        "lines": 8,
+                    }
+                ],
+            }
+
+        def function_contributors(self, dest_path, function_name):
+            return {
+                "path": dest_path.removeprefix("b5-decomp/"),
+                "basis": "surviving_lines",
+                "line_range": [10, 20],
+                "function_range_found": True,
+                "contributors": [
+                    {
+                        "name": "Derneuere",
+                        "email": "12345+Derneuere@users.noreply.github.com",
+                        "lines": 4,
+                    }
+                ],
+            }
+
+    client.app.state.decomp = FakeDecomp()
+
+    state = client.get("/dashboard/state").json()
+    derneuere = next(agent for agent in state["agents"] if agent["name"] == "Derneuere")
+
+    assert state["attribution_cache"]["file_cached"] == 1
+    assert state["attribution_cache"]["file_total"] == 1
+    assert state["attribution_cache"]["function_cached"] == 1
+    assert state["attribution_cache"]["function_total"] == 1
+    assert state["attribution_cache"]["file_complete"] is True
+    assert state["attribution_cache"]["function_complete"] is True
+    assert derneuere["contributed_tus"] == 1
+    assert derneuere["contributed_funcs"] == 1
+
+
 def test_file_history_uses_registered_actor_aliases(tmp_path):
     client, store = make_client(tmp_path)
     store.create_worker("Adriwin", github_username="Adriwin06")

@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from bp_work_server import __version__
+from bp_work_server.attribution_cache import warm_attribution_cache
 from bp_work_server.decomp import DecompRepo
 from bp_work_server.github import GitHubClient, login_from_noreply_email
 from bp_work_server.models import (
@@ -80,6 +81,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     app.state.decomp = DecompRepo()
     app.state.dashboard_cache = {"expires_at": 0.0, "data": None}
     app.state.dashboard_cache_lock = threading.Lock()
+    app.state.attribution_warm_lock = asyncio.Lock()
     static_dir = files("bp_work_server").joinpath("static")
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
@@ -111,6 +113,13 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             cache["attribution_repo_rev"] = attribution_repo_rev
             cache["expires_at"] = now + 1.0
             return data
+
+    def attribution_cache_needs_warm(data: dict) -> bool:
+        coverage = data.get("attribution_cache") or {}
+        return bool(
+            coverage.get("repo_rev")
+            and not (coverage.get("file_complete") and coverage.get("function_complete"))
+        )
 
     def worker_identity(
         x_work_token: str | None = Header(default=None),
@@ -403,7 +412,27 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
             if hasattr(decomp, "revision")
             else None
         )
-        return cached_dashboard_state(store, attribution_repo_rev=repo_rev)
+        data = cached_dashboard_state(store, attribution_repo_rev=repo_rev)
+        if not attribution_cache_needs_warm(data):
+            return data
+
+        async with app.state.attribution_warm_lock:
+            current_rev = (
+                await asyncio.to_thread(decomp.revision)
+                if hasattr(decomp, "revision")
+                else None
+            )
+            data = cached_dashboard_state(store, attribution_repo_rev=current_rev)
+            if not attribution_cache_needs_warm(data):
+                return data
+            await asyncio.to_thread(warm_attribution_cache, store, decomp)
+            invalidate_dashboard_cache()
+            warmed_rev = (
+                await asyncio.to_thread(decomp.revision)
+                if hasattr(decomp, "revision")
+                else current_rev
+            )
+            return cached_dashboard_state(store, attribution_repo_rev=warmed_rev)
 
     @app.get("/api/facets")
     def facets(store: WorkStore = Depends(get_store)) -> dict:

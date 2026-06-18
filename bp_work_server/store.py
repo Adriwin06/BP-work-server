@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import re
 import secrets
 import sqlite3
 from collections import defaultdict
@@ -204,6 +205,7 @@ class WorkStore:
                 con.execute("ALTER TABLE func ADD COLUMN completed_by TEXT")
             if "completed_at" not in cols:
                 con.execute("ALTER TABLE func ADD COLUMN completed_at TEXT")
+            self._backfill_missing_dest_paths(con)
         self._migrate_users()
 
     def _migrate_users(self) -> None:
@@ -288,7 +290,7 @@ class WorkStore:
                       source=excluded.source,
                       n_funcs=excluded.n_funcs,
                       n_decfigs=excluded.n_decfigs,
-                      dest_path=COALESCE(tu.dest_path, excluded.dest_path)
+                      dest_path=COALESCE(NULLIF(tu.dest_path, ''), excluded.dest_path)
                     """,
                     (
                         tu_id,
@@ -2064,7 +2066,33 @@ class WorkStore:
     def _dest_for(self, tu_id: str, source: str | None) -> str | None:
         if source == "decfigs":
             return "b5-decomp/src/" + self._normalize_path(tu_id)
+        if source == "class" or tu_id.startswith("class:"):
+            class_name = tu_id.removeprefix("class:")
+            parts = [
+                self._safe_class_path_part(part)
+                for part in class_name.replace("\\", "::").replace("/", "::").split("::")
+            ]
+            parts = [part for part in parts if part]
+            if not parts:
+                parts = ["anonymous"]
+            return "b5-decomp/src/classes/" + "/".join(parts) + ".cpp"
         return None
+
+    def _backfill_missing_dest_paths(self, con: sqlite3.Connection) -> None:
+        for row in con.execute(
+            """
+            SELECT id, source
+            FROM tu
+            WHERE dest_path IS NULL OR dest_path=''
+            """
+        ):
+            dest_path = self._dest_for(row["id"], row["source"])
+            if dest_path:
+                con.execute("UPDATE tu SET dest_path=? WHERE id=?", (dest_path, row["id"]))
+
+    def _safe_class_path_part(self, value: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")
+        return cleaned or "anonymous"
 
     def _normalize_path(self, value: str) -> str:
         parts: list[str] = []

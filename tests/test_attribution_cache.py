@@ -61,17 +61,21 @@ def test_warm_attribution_cache_populates_cacheable_reviewed_work(tmp_path):
     result = warm_attribution_cache(store, FakeDecomp())
 
     assert result.files_cached == 1
-    assert result.functions_cached == 1
+    assert result.functions_cached == 2
     state = store.dashboard_state(attribution_repo_rev="rev-current")
     assert state["attribution_cache"]["file_cached"] == 1
     assert state["attribution_cache"]["file_total"] == 1
-    assert state["attribution_cache"]["function_cached"] == 1
-    assert state["attribution_cache"]["function_total"] == 1
+    assert state["attribution_cache"]["function_cached"] == 2
+    assert state["attribution_cache"]["function_total"] == 2
     assert state["attribution_cache"]["file_complete"] is True
     assert state["attribution_cache"]["function_complete"] is True
     with store.connect() as con:
         rows = con.execute(
             "SELECT scope, dest_path, function_name, payload_json FROM attribution_cache ORDER BY scope"
         ).fetchall()
-    assert [(row["scope"], row["function_name"]) for row in rows] == [("file", ""), ("function", "A::Run")]
+    assert [(row["scope"], row["function_name"]) for row in rows] == [
+        ("file", ""),
+        ("function", "A::Run"),
+        ("function", "Utility::Fn"),
+    ]
     assert json.loads(rows[0]["payload_json"])["contributors"]["contributors"][0]["name"] == "Niaz"
