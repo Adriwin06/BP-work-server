@@ -12,122 +12,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from bp_work_server.models import ClaimResponse, NextTu, StatusCounts, TuRecord
+from bp_work_server.schema import (
+    DB_BUSY_TIMEOUT_MS,
+    DURABLE_IMPORT_STATUSES,
+    TU_STATUSES,
+    USERS_SCHEMA,
+    WORK_SCHEMA,
+)
 
 
-TU_STATUSES = {"todo", "in_progress", "compiled", "done", "blocked"}
-# Only these durable statuses are seeded from the workflow snapshot. The transient
-# work states (in_progress/compiled), owners, and leases are born on the server and
-# must never be clobbered or resurrected by a re-import/sync -- see docs/protocol.md
-# "Two-store model". This is what keeps stale snapshot claims out of Active Work.
-DURABLE_IMPORT_STATUSES = {"done", "blocked"}
-DB_BUSY_TIMEOUT_MS = 30_000
-
-
-SCHEMA = """
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS meta(
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
-
-CREATE TABLE IF NOT EXISTS tu(
-  id TEXT PRIMARY KEY,
-  source TEXT,
-  status TEXT NOT NULL DEFAULT 'todo',
-  n_funcs INTEGER NOT NULL DEFAULT 0,
-  n_decfigs INTEGER NOT NULL DEFAULT 0,
-  dest_path TEXT,
-  owner TEXT,
-  notes TEXT,
-  updated_at TEXT,
-  claimed_at TEXT,
-  lease_expires_at TEXT,
-  commit_hash TEXT,
-  CHECK(status IN ('todo','in_progress','compiled','done','blocked'))
-);
-
-CREATE TABLE IF NOT EXISTS func(
-  name TEXT PRIMARY KEY,
-  tu_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'todo',
-  completed_by TEXT,
-  completed_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS tu_dep(
-  tu_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
-  dep_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
-  weight INTEGER NOT NULL DEFAULT 1,
-  PRIMARY KEY(tu_id, dep_id)
-);
-
-CREATE TABLE IF NOT EXISTS goal(
-  name TEXT PRIMARY KEY,
-  category TEXT,
-  description TEXT,
-  source TEXT
-);
-
-CREATE TABLE IF NOT EXISTS goal_tu(
-  goal_name TEXT NOT NULL REFERENCES goal(name) ON DELETE CASCADE,
-  tu_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
-  PRIMARY KEY(goal_name, tu_id)
-);
-
-CREATE TABLE IF NOT EXISTS event(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT NOT NULL,
-  tu_id TEXT,
-  agent TEXT,
-  action TEXT NOT NULL,
-  detail_json TEXT NOT NULL DEFAULT '{}'
-);
-
-CREATE TABLE IF NOT EXISTS attribution_cache(
-  scope TEXT NOT NULL,
-  dest_path TEXT NOT NULL,
-  function_name TEXT NOT NULL DEFAULT '',
-  repo_rev TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY(scope, dest_path, function_name, repo_rev)
-);
-
-CREATE INDEX IF NOT EXISTS ix_tu_status ON tu(status);
-CREATE INDEX IF NOT EXISTS ix_tu_owner ON tu(owner);
-CREATE INDEX IF NOT EXISTS ix_func_tu ON func(tu_id);
-CREATE INDEX IF NOT EXISTS ix_dep_tu ON tu_dep(tu_id);
-CREATE INDEX IF NOT EXISTS ix_event_ts ON event(ts);
-CREATE INDEX IF NOT EXISTS ix_attribution_cache_lookup
-  ON attribution_cache(scope, dest_path, function_name);
-"""
-
-
-USERS_SCHEMA = """
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS worker(
-  token TEXT PRIMARY KEY,
-  username TEXT NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1,
-  is_admin INTEGER NOT NULL DEFAULT 0,
-  github_username TEXT,
-  created_at TEXT,
-  last_seen TEXT
-);
-
-CREATE INDEX IF NOT EXISTS ix_worker_username ON worker(username);
-CREATE INDEX IF NOT EXISTS ix_worker_active ON worker(active);
-
-CREATE TABLE IF NOT EXISTS worker_alias(
-  alias TEXT PRIMARY KEY,
-  username TEXT NOT NULL,
-  kind TEXT NOT NULL DEFAULT 'manual'
-);
-
-CREATE INDEX IF NOT EXISTS ix_worker_alias_username ON worker_alias(username);
-"""
+SCHEMA = WORK_SCHEMA
 
 
 def utcnow() -> datetime:
@@ -1261,22 +1155,8 @@ class WorkStore:
                 self._canonicalize_item_actors(items, aliases)
                 return {"total": total, "limit": limit, "offset": offset, "items": items}
 
-            rows = con.execute(
-                f"SELECT t.* FROM tu t {joins}{where}", params
-            ).fetchall()
-            unresolved: dict[str, int] = {}
-            dep_map: dict[str, set[str]] = defaultdict(set)
-            for dep in con.execute("SELECT tu_id, dep_id FROM tu_dep"):
-                dep_map[dep["tu_id"]].add(dep["dep_id"])
-            status_by_tu = {
-                r["id"]: r["status"] for r in con.execute("SELECT id, status FROM tu")
-            }
-            for row in rows:
-                unresolved[row["id"]] = sum(
-                    1
-                    for dep_id in dep_map.get(row["id"], ())
-                    if status_by_tu.get(dep_id) != "done"
-                )
+            rows = con.execute(f"SELECT t.* FROM tu t {joins}{where}", params).fetchall()
+            unresolved = self._unresolved_dep_counts(con, [row["id"] for row in rows])
 
             items = [self._dashboard_tu(row) for row in rows]
             for item in items:
@@ -1440,23 +1320,16 @@ class WorkStore:
             """
         ).fetchall()
 
-        dep_map: dict[str, set[str]] = defaultdict(set)
-        for row in con.execute("SELECT tu_id, dep_id FROM tu_dep"):
-            dep_map[row["tu_id"]].add(row["dep_id"])
-        status_by_tu = {
-            row["id"]: row["status"] for row in con.execute("SELECT id, status FROM tu")
-        }
-
+        unresolved_by_tu = self._unresolved_dep_counts(
+            con,
+            [row["id"] for row in rows],
+            scope=scope,
+        )
         ranked: list[dict[str, Any]] = []
         for row in rows:
             if scope is not None and row["id"] not in scope:
                 continue
-            unresolved = 0
-            for dep_id in dep_map.get(row["id"], set()):
-                if scope is not None and dep_id not in scope:
-                    continue
-                if status_by_tu.get(dep_id) != "done":
-                    unresolved += 1
+            unresolved = unresolved_by_tu.get(row["id"], 0)
             ranked.append({**dict(row), "unresolved_deps": unresolved})
 
         ranked.sort(
@@ -1468,6 +1341,35 @@ class WorkStore:
             )
         )
         return active_goal, [NextTu(**row) for row in ranked[:n]]
+
+    def _unresolved_dep_counts(
+        self,
+        con: sqlite3.Connection,
+        tu_ids: list[str],
+        *,
+        scope: set[str] | None = None,
+    ) -> dict[str, int]:
+        """Count unresolved deps for specific TUs without scanning unrelated rows."""
+        if not tu_ids:
+            return {}
+        counts = {tu_id: 0 for tu_id in tu_ids}
+        for chunk_start in range(0, len(tu_ids), 500):
+            chunk = tu_ids[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in con.execute(
+                f"""
+                SELECT d.tu_id, d.dep_id, dep.status AS dep_status
+                FROM tu_dep d
+                LEFT JOIN tu dep ON dep.id=d.dep_id
+                WHERE d.tu_id IN ({placeholders})
+                """,
+                chunk,
+            ):
+                if scope is not None and row["dep_id"] not in scope:
+                    continue
+                if row["dep_status"] != "done":
+                    counts[row["tu_id"]] += 1
+        return counts
 
     def _restore_status(self, con: sqlite3.Connection, status: dict[str, Any]) -> int:
         rows = 0

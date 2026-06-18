@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+TU_STATUSES = {"todo", "in_progress", "compiled", "done", "blocked"}
+# Only these durable statuses are seeded from the workflow snapshot. The transient
+# work states (in_progress/compiled), owners, and leases are born on the server and
+# must never be clobbered or resurrected by a re-import/sync.
+DURABLE_IMPORT_STATUSES = {"done", "blocked"}
+DB_BUSY_TIMEOUT_MS = 30_000
+
+
+WORK_SCHEMA = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS meta(
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tu(
+  id TEXT PRIMARY KEY,
+  source TEXT,
+  status TEXT NOT NULL DEFAULT 'todo',
+  n_funcs INTEGER NOT NULL DEFAULT 0,
+  n_decfigs INTEGER NOT NULL DEFAULT 0,
+  dest_path TEXT,
+  owner TEXT,
+  notes TEXT,
+  updated_at TEXT,
+  claimed_at TEXT,
+  lease_expires_at TEXT,
+  commit_hash TEXT,
+  CHECK(status IN ('todo','in_progress','compiled','done','blocked'))
+);
+
+CREATE TABLE IF NOT EXISTS func(
+  name TEXT PRIMARY KEY,
+  tu_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'todo',
+  completed_by TEXT,
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tu_dep(
+  tu_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
+  dep_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
+  weight INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(tu_id, dep_id)
+);
+
+CREATE TABLE IF NOT EXISTS goal(
+  name TEXT PRIMARY KEY,
+  category TEXT,
+  description TEXT,
+  source TEXT
+);
+
+CREATE TABLE IF NOT EXISTS goal_tu(
+  goal_name TEXT NOT NULL REFERENCES goal(name) ON DELETE CASCADE,
+  tu_id TEXT NOT NULL REFERENCES tu(id) ON DELETE CASCADE,
+  PRIMARY KEY(goal_name, tu_id)
+);
+
+CREATE TABLE IF NOT EXISTS event(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  tu_id TEXT,
+  agent TEXT,
+  action TEXT NOT NULL,
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS attribution_cache(
+  scope TEXT NOT NULL,
+  dest_path TEXT NOT NULL,
+  function_name TEXT NOT NULL DEFAULT '',
+  repo_rev TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(scope, dest_path, function_name, repo_rev)
+);
+
+CREATE INDEX IF NOT EXISTS ix_tu_status ON tu(status);
+CREATE INDEX IF NOT EXISTS ix_tu_owner ON tu(owner);
+CREATE INDEX IF NOT EXISTS ix_tu_source ON tu(source);
+CREATE INDEX IF NOT EXISTS ix_tu_updated ON tu(updated_at);
+CREATE INDEX IF NOT EXISTS ix_func_tu ON func(tu_id);
+CREATE INDEX IF NOT EXISTS ix_func_status ON func(status);
+CREATE INDEX IF NOT EXISTS ix_dep_tu ON tu_dep(tu_id);
+CREATE INDEX IF NOT EXISTS ix_dep_dep ON tu_dep(dep_id);
+CREATE INDEX IF NOT EXISTS ix_event_ts ON event(ts);
+CREATE INDEX IF NOT EXISTS ix_event_tu_action ON event(tu_id, action, id);
+CREATE INDEX IF NOT EXISTS ix_attribution_cache_lookup
+  ON attribution_cache(scope, dest_path, function_name);
+"""
+
+
+USERS_SCHEMA = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS worker(
+  token TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  github_username TEXT,
+  created_at TEXT,
+  last_seen TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_worker_username ON worker(username);
+CREATE INDEX IF NOT EXISTS ix_worker_active ON worker(active);
+
+CREATE TABLE IF NOT EXISTS worker_alias(
+  alias TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'manual'
+);
+
+CREATE INDEX IF NOT EXISTS ix_worker_alias_username ON worker_alias(username);
+"""

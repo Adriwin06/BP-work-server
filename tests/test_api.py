@@ -271,6 +271,9 @@ def test_dashboard_state_warms_missing_attribution_cache(tmp_path):
 
     client.app.state.decomp = FakeDecomp()
 
+    initial = client.get("/dashboard/state").json()
+    assert initial["attribution_cache_warming"] is True
+
     state = client.get("/dashboard/state").json()
     derneuere = next(agent for agent in state["agents"] if agent["name"] == "Derneuere")
 

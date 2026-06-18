@@ -296,6 +296,10 @@ Dashboard-optimized summary. It returns aggregate progress, active agents,
 active work, blocked work, recent events, imported goals, and the next ranked
 TUs without requiring the browser to pull the full TU table.
 
+If local-git attribution is incomplete for the current `b5-decomp` revision, the
+response includes `attribution_cache_warming: true` and schedules cache warming
+in the background. A later request will pick up the warmed attribution data.
+
 ## `work.py` Integration
 
 The server is **optional and invite-only**: the local workflow runs fully standalone and

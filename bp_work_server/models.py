@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 TuStatus = Literal["todo", "in_progress", "compiled", "done", "blocked"]
@@ -181,3 +181,81 @@ class WorkerListResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     detail: str | None = None
+
+
+class FlexibleModel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class DashboardStateResponse(FlexibleModel):
+    server_time: datetime | None = None
+    active_goal: str | None = None
+    totals: dict[str, Any] = Field(default_factory=dict)
+    counts: dict[str, Any] = Field(default_factory=dict)
+    agents: list[dict[str, Any]] = Field(default_factory=list)
+    active_work: list[dict[str, Any]] = Field(default_factory=list)
+    next: dict[str, Any] = Field(default_factory=dict)
+    recent_events: list[dict[str, Any]] = Field(default_factory=list)
+    goals: list[dict[str, Any]] = Field(default_factory=list)
+    blocked: list[dict[str, Any]] = Field(default_factory=list)
+    actor_profiles: dict[str, str] = Field(default_factory=dict)
+    attribution_cache: dict[str, Any] = Field(default_factory=dict)
+    attribution_cache_warming: bool = False
+
+
+class FacetsResponse(FlexibleModel):
+    sources: list[str] = Field(default_factory=list)
+    tu_statuses: list[str] = Field(default_factory=list)
+    func_statuses: list[str] = Field(default_factory=list)
+    goals: list[str] = Field(default_factory=list)
+    owners: list[str] = Field(default_factory=list)
+
+
+class SearchResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[dict[str, Any]]
+
+
+class TuDetailResponse(FlexibleModel):
+    id: str
+    source: str | None = None
+    status: str
+    n_funcs: int = 0
+    n_decfigs: int = 0
+    dest_path: str | None = None
+    owner: str | None = None
+    notes: str | None = None
+    updated_at: datetime | str | None = None
+    lease_expires_at: datetime | str | None = None
+    funcs: list[dict[str, Any]] = Field(default_factory=list)
+    deps: list[dict[str, Any]] = Field(default_factory=list)
+    dependents: list[dict[str, Any]] = Field(default_factory=list)
+    goals: list[str] = Field(default_factory=list)
+
+
+class GoalDetailResponse(FlexibleModel):
+    name: str
+    total: int = 0
+    done: int = 0
+    remaining_count: int = 0
+    counts: dict[str, int] = Field(default_factory=dict)
+    ready: list[dict[str, Any]] = Field(default_factory=list)
+    locked: list[dict[str, Any]] = Field(default_factory=list)
+    blocked: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class GitHubOverviewResponse(FlexibleModel):
+    repo: dict[str, Any] = Field(default_factory=dict)
+    info: dict[str, Any] | None = None
+    commits: list[dict[str, Any]] = Field(default_factory=list)
+    latest_commit: dict[str, Any] | None = None
+    tree: dict[str, Any] | None = None
+    rate_limit: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    fetched_at: float | None = None
+
+
+class FileHistoryResponse(BaseModel):
+    history: dict[str, list[dict[str, Any]]]
