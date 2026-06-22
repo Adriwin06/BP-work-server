@@ -172,10 +172,21 @@ class WorkStore:
         deps_path = progress / "tu_deps.json"
         goals_path = progress / "goals.json"
 
+        # Real home files for class TUs (resolved from committed sources by
+        # tools/work/resolve_class_homes.py). class TUs have no path in tu_index,
+        # so without this the synthetic src/classes/<Class>.cpp path is used and
+        # Git contribution attribution can never resolve them.
+        class_homes_path = progress / "class_homes.json"
+
         tu_index = json.loads(tu_index_path.read_text(encoding="utf-8"))
         status = json.loads(status_path.read_text(encoding="utf-8")) if status_path.exists() else {}
         deps = json.loads(deps_path.read_text(encoding="utf-8")) if deps_path.exists() else []
         goals = json.loads(goals_path.read_text(encoding="utf-8")) if goals_path.exists() else {}
+        class_homes = (
+            json.loads(class_homes_path.read_text(encoding="utf-8"))
+            if class_homes_path.exists()
+            else {}
+        )
 
         with self.connect(ensure_wal=True) as con:
             con.executescript(SCHEMA)
@@ -201,7 +212,7 @@ class WorkStore:
                         row.get("source"),
                         int(row.get("n_funcs") or 0),
                         int(row.get("n_decfigs") or 0),
-                        self._dest_for(tu_id, row.get("source")),
+                        class_homes.get(tu_id) or self._dest_for(tu_id, row.get("source")),
                         iso(),
                     ),
                 )
