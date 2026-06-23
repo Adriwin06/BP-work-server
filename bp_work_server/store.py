@@ -226,6 +226,16 @@ class WorkStore:
                         (fn, tu_id),
                     )
 
+            # class TU dest_paths are otherwise the synthetic src/classes/<Class>.cpp
+            # (kept by the ON CONFLICT COALESCE above). The resolved home is always the
+            # better, real path, so let class_homes win for class TUs. This only moves
+            # attribution to the right file -- it never touches TU status.
+            for class_tu_id, home in class_homes.items():
+                con.execute(
+                    "UPDATE tu SET dest_path=? WHERE id=? AND source='class' AND dest_path IS NOT ?",
+                    (home, class_tu_id, home),
+                )
+
             status_rows = self._restore_status(con, status)
             dep_count = self._restore_deps(con, deps)
             goal_count = self._restore_goals(con, goals)
