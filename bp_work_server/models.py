@@ -135,22 +135,6 @@ class SyncResponse(ImportResponse):
     commit: str
 
 
-class ReconcileEventsRequest(BaseModel):
-    actors: list[str] = Field(default_factory=list)
-    apply: bool = False
-
-
-class ReconcileEventsResponse(BaseModel):
-    scanned_tus: int
-    scanned_commits: int
-    inserted: int
-    skipped_existing_real: int
-    skipped_existing_reconstructed: int
-    skipped_actor_filter: int
-    skipped_unresolved_actor: int
-    applied: bool
-
-
 class WorkerCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=160)
     is_admin: bool = False

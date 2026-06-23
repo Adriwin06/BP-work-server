@@ -644,11 +644,12 @@ class WorkStore:
     # single meaningless commit SHA, so their real time comes from the file's own
     # last commit instead (see decomp.DecompRepo).
     BACKFILLED_SOURCES = ("workflow commit delta", "legacy pre-server attribution")
-    # Events synthesized from b5-decomp git history (reconcile_events.py) after the
-    # server DB was reset -- no real server workflow event ever existed for them, and
-    # their ts is the git commit author date, not a real review time. They are hidden
-    # from all dashboards/metrics/feeds by default so only GitHub-verifiable activity
-    # is shown. The rows are NOT deleted; unhide them with BP_HIDE_RECONSTRUCTED=0.
+    # Events synthesized from b5-decomp git history after the server DB was reset
+    # (by the since-removed reconcile-events tool) -- no real server workflow event
+    # ever existed for them, and their ts is the git commit author date, not a real
+    # review time. They are hidden from all dashboards/metrics/feeds by default so
+    # only GitHub-verifiable activity is shown. Any such rows still present are NOT
+    # deleted; unhide them with BP_HIDE_RECONSTRUCTED=0.
     RECONSTRUCTED_SOURCES = ("b5-decomp commit reconstruction",)
     RELIABLE_EVENT_ACTIONS = (
         "claim",

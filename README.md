@@ -136,25 +136,44 @@ GET /api/funcs            # search functions (q, status, tu, limit, offset)
 `sort` accepts `id`, `funcs`, `updated`, `status`, or `queue` (dependency-ranked,
 matching `next`).
 
-## Event Reconciliation
+## Syncing the Server
 
-If completed commits reached `b5-decomp` without the normal workflow posting live review
-events to the server, an admin can reconstruct only the missing `review_pass` events from
-the local git history. Dry-run first:
-
-```powershell
-bp-work-server --db data\bp-work.sqlite3 reconcile-events --actor JeBobs
-bp-work-server --db data\bp-work.sqlite3 reconcile-events --actor JeBobs --apply
-```
-
-From the workflow repo, use the admin wrapper:
+When commits reach `b5-decomp` (or the workflow's `progress/` files) outside the
+server's normal claim/submit flow, refresh the server's derived state: re-resolve
+class homes, re-import the progress files, then re-warm Git attribution.
 
 ```powershell
-work server-reconcile-events --actor JeBobs [--apply]
+# 1) Workflow repo: refresh the derived inputs from the new commits
+cd ..\BP-Decomp_Workflow
+git pull                                          # new commits + reconciled status.json
+git -C b5-decomp fetch origin dev                 # local clone needs them for git-blame
+python tools\work\resolve_class_homes.py --apply  # refresh class TU -> real home-file map
+
+# If the new commits also changed which TUs are done and status.json is not
+# already reconciled, regenerate it from the committed files first:
+python tools\work\reconcile_from_files.py --apply
+
+# 2) Server repo: re-import progress, then re-warm attribution
+cd ..\BP-work-server
+bp-work-server --db data\bp-work.sqlite3 import ..\BP-Decomp_Workflow
+bp-work-server --db data\bp-work.sqlite3 warm-attribution-cache `
+    --decomp-root ..\BP-Decomp_Workflow\b5-decomp --branch dev
 ```
 
-Reconstructed events are marked as coming from `b5-decomp`; real workflow events that
-already exist are skipped.
+- `import` (without `--reset`) updates TU status/metadata and reads
+  `progress/class_homes.json`, preserving existing data.
+- `warm-attribution-cache` recomputes Git surviving-line attribution for the new
+  revision. The dashboard also auto-warms when it sees a new repo revision, so the
+  explicit warm is optional.
+- `resolve_class_homes.py` maps each `class:` TU to the committed file that holds
+  its code, so class work attributes to its authors instead of a synthetic
+  `src/classes/<Class>.cpp` path; ambiguous classes are left unmapped, never guessed.
+
+> There is intentionally **no event-reconstruction command**. Synthesizing
+> `review_pass` events from git history (a removed `reconcile-events` tool) produced
+> fabricated events stamped with commit dates; per-person credit is now derived
+> purely from Git attribution. Any reconstructed events left from that era are
+> hidden by default (`BP_HIDE_RECONSTRUCTED=0` to reveal them).
 
 ## Branding
 

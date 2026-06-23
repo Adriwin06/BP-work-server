@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query, status
@@ -8,8 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query,
 from bp_work_server.dependencies import get_store, require_admin_worker
 from bp_work_server.models import (
     ImportResponse,
-    ReconcileEventsRequest,
-    ReconcileEventsResponse,
     SyncRequest,
     SyncResponse,
     WorkerCreateRequest,
@@ -95,33 +92,3 @@ def sync_workflow(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-
-
-@router.post("/reconcile-events", response_model=ReconcileEventsResponse)
-async def reconcile_events(
-    req: ReconcileEventsRequest,
-    request: Request,
-    _admin: str = Depends(require_admin_worker),
-    store: WorkStore = Depends(get_store),
-) -> ReconcileEventsResponse:
-    import bp_work_server.api as api
-
-    result = await asyncio.to_thread(
-        api.reconcile_review_events_from_decomp,
-        store,
-        request.app.state.decomp,
-        actors=set(req.actors or []),
-        apply=req.apply,
-    )
-    invalidate_dashboard_cache(request)
-    log.info("admin reconcile_events actors=%s apply=%s inserted=%s", req.actors, req.apply, result.inserted)
-    return ReconcileEventsResponse(
-        scanned_tus=result.scanned_tus,
-        scanned_commits=result.scanned_commits,
-        inserted=result.inserted,
-        skipped_existing_real=result.skipped_existing_real,
-        skipped_existing_reconstructed=result.skipped_existing_reconstructed,
-        skipped_actor_filter=result.skipped_actor_filter,
-        skipped_unresolved_actor=result.skipped_unresolved_actor,
-        applied=req.apply,
-    )

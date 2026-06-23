@@ -15,7 +15,6 @@ from bp_work_server import __version__
 from bp_work_server.decomp import DecompRepo
 from bp_work_server.dependencies import auth_required
 from bp_work_server.github import GitHubClient
-from bp_work_server.reconcile_events import reconcile_review_events_from_decomp
 from bp_work_server.routes import admin, dashboard, events, github, static, work
 from bp_work_server.routes.static import static_dir
 from bp_work_server.store import WorkStore
@@ -29,7 +28,6 @@ __all__ = [
     "create_app",
     "default_db_path",
     "default_users_db_path",
-    "reconcile_review_events_from_decomp",
     "sync_workflow_repo",
 ]
 

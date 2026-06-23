@@ -87,32 +87,6 @@ Lists workers (`token`, `username`, `active`, `is_admin`, `created_at`, `last_se
 
 Revokes a worker id (`204`; `404` if unknown). Revoked ids can no longer authenticate.
 
-### `POST /admin/reconcile-events`  (admin)
-
-Reconstructs missing live `review_pass` events from the local `b5-decomp` git history.
-Use this only for completed work that reached `b5-decomp` without the normal workflow
-posting its review event to the server. The call is a dry run unless `apply` is true.
-
-The reconciler uses server identity aliases and worker GitHub overrides, skips real
-workflow events that already exist, and marks appended events as reconstructed from
-`b5-decomp` so the dashboard can distinguish them from normal workflow events.
-
-```json
-// request
-{ "actors": ["JeBobs"], "apply": false }
-// response
-{
-  "applied": false,
-  "summary": {
-    "scanned_tus": 366,
-    "scanned_commits": 535,
-    "inserted": 0,
-    "skipped_existing_real": 9,
-    "skipped_existing_reconstructed": 210
-  }
-}
-```
-
 ### `GET /next?n=5&goal=boot-trace`
 
 Returns dependency-ranked `todo` TUs. If `goal` is omitted, the imported active goal
@@ -345,7 +319,6 @@ Mapping:
 | `work block <tu>` | `POST /tu/{tu}/block` |
 | `work unblock <tu>` | `POST /tu/{tu}/unblock` |
 | `work reset-tu <tu>` | `POST /tu/{tu}/reset` |
-| `work server-reconcile-events --actor NAME [--apply]` | `POST /admin/reconcile-events` |
 | `work server-reset [--to REF]` | `POST /admin/sync` with `reset=true` |
 
 The local `ledger.sqlite` can remain a cache for dossiers, dependencies, and
