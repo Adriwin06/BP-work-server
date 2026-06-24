@@ -109,16 +109,32 @@ class DecompRepo:
         with self._lock:
             if time.time() - self._refreshed_at < REFRESH_TTL:
                 return
-            ok = self._git("fetch", "--quiet", "origin", self.branch)
-            if ok is not None:
-                self._git("reset", "--hard", f"origin/{self.branch}")
-                self._cache.clear()
-                self._blame_cache.clear()
-                self._source_cache.clear()
-                self._function_range_cache.clear()
-            # Record the attempt regardless so a flaky network does not make
-            # every request pay the fetch cost.
-            self._refreshed_at = time.time()
+            self._refresh_locked()
+
+    def force_refresh(self) -> None:
+        """Fetch + hard-reset the branch now, ignoring the TTL.
+
+        Called after an admin sync so attribution is computed against the same
+        b5-decomp tip the workflow just advanced to, instead of a clone that can
+        be up to REFRESH_TTL (15 min) stale.
+        """
+        if not self.available:
+            return
+        with self._lock:
+            self._refresh_locked()
+
+    def _refresh_locked(self) -> None:
+        """Fetch + hard-reset to the branch tip and clear memos. Caller holds the lock."""
+        ok = self._git("fetch", "--quiet", "origin", self.branch)
+        if ok is not None:
+            self._git("reset", "--hard", f"origin/{self.branch}")
+            self._cache.clear()
+            self._blame_cache.clear()
+            self._source_cache.clear()
+            self._function_range_cache.clear()
+        # Record the attempt regardless so a flaky network does not make
+        # every request pay the fetch cost.
+        self._refreshed_at = time.time()
 
     @staticmethod
     def _repo_relative(dest_path: str) -> str:

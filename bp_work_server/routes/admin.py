@@ -85,6 +85,11 @@ def sync_workflow(
         import bp_work_server.api as api
 
         result = api.sync_workflow_repo(store, branch=req.branch, reset=req.reset)
+        # Bring the attribution clone to the same tip the workflow just advanced to,
+        # so contribution numbers reflect the synced revision (not a TTL-stale clone).
+        decomp = getattr(request.app.state, "decomp", None)
+        if decomp is not None:
+            decomp.force_refresh()
         invalidate_dashboard_cache(request)
         log.info("admin sync branch=%s reset=%s", req.branch, req.reset)
         return result
