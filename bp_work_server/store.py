@@ -661,6 +661,10 @@ class WorkStore:
     # only GitHub-verifiable activity is shown. Any such rows still present are NOT
     # deleted; unhide them with BP_HIDE_RECONSTRUCTED=0.
     RECONSTRUCTED_SOURCES = ("b5-decomp commit reconstruction",)
+    # git's placeholder author for lines that are modified but not committed (a dirty
+    # working tree in the b5-decomp clone). It is never a real contributor, so it must
+    # never surface as an agent. Compared case-insensitively against name and email.
+    NON_AUTHOR_IDENTITIES = frozenset({"not committed yet", "not.committed.yet"})
     RELIABLE_EVENT_ACTIONS = (
         "claim",
         "compiled",
@@ -737,6 +741,8 @@ class WorkStore:
             return None
         cleaned = str(actor).strip()
         if not cleaned:
+            return None
+        if cleaned.lower() in self.NON_AUTHOR_IDENTITIES:
             return None
         if aliases is None:
             aliases, _profiles = self.actor_maps()
