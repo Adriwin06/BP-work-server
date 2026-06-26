@@ -110,7 +110,7 @@ Invoke-RestMethod http://localhost:8765/claims `
 
 ## GitHub Dashboard Panel
 
-The dashboard mirrors a GitHub repository (default `Adriwin06/b5-decomp` on the
+The dashboard mirrors a GitHub repository (default `BurnoutDecomp/b5-decomp` on the
 `dev` branch): description, stars/forks/issues, recent commits, and the file
 tree. The browser only talks to this server's `/github/overview` endpoint; the
 server proxies and caches GitHub so every viewer shares one upstream request.
@@ -122,7 +122,7 @@ it to 5000/hour.
 
 ```powershell
 $env:GITHUB_TOKEN = "ghp_xxx"          # optional, raises the rate limit
-$env:BP_GITHUB_OWNER = "Adriwin06"     # optional overrides
+$env:BP_GITHUB_OWNER = "BurnoutDecomp" # optional overrides
 $env:BP_GITHUB_REPO  = "b5-decomp"
 $env:BP_GITHUB_REF   = "dev"
 ```

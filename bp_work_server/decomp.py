@@ -27,7 +27,7 @@ from typing import Any
 
 # The decomp source lives next to the workflow checkout by default; both sit in
 # the persistent data dir so they survive code deploys.
-DEFAULT_DECOMP_REPO = "https://github.com/Adriwin06/b5-decomp.git"
+DEFAULT_DECOMP_REPO = "https://github.com/BurnoutDecomp/b5-decomp.git"
 DEFAULT_DECOMP_ROOT = "/var/lib/bp-work-server/b5-decomp"
 DEFAULT_DECOMP_BRANCH = os.environ.get("BP_GITHUB_REF", "dev")
 

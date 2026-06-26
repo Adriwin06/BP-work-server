@@ -7,7 +7,7 @@ const state = {
   githubInFlight: false,
   treeCollapsed: {}, // path -> bool, remembers folder state across refreshes
   actorProfiles: {},
-  repo: { owner: "Adriwin06", name: "b5-decomp", ref: "dev" },
+  repo: { owner: "BurnoutDecomp", name: "b5-decomp", ref: "dev" },
   explorer: {
     tab: "tus",
     q: "",

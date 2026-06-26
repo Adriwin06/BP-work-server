@@ -8,7 +8,7 @@ from typing import Any
 from bp_work_server.store import WorkStore
 
 
-DEFAULT_WORKFLOW_REPO = "https://github.com/Adriwin06/BP-Decomp_Workflow.git"
+DEFAULT_WORKFLOW_REPO = "https://github.com/BurnoutDecomp/BP-Decomp_Workflow.git"
 DEFAULT_WORKFLOW_ROOT = "/var/lib/bp-work-server/BP-Decomp_Workflow"
 DEFAULT_WORKFLOW_BRANCH = "main"
 

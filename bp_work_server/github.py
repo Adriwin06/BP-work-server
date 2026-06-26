@@ -32,7 +32,7 @@ from bp_work_server.decomp import DEFAULT_DECOMP_ROOT
 GITHUB_API = "https://api.github.com"
 
 # Repository the dashboard mirrors. Overridable via environment for forks.
-REPO_OWNER = os.environ.get("BP_GITHUB_OWNER", "Adriwin06")
+REPO_OWNER = os.environ.get("BP_GITHUB_OWNER", "BurnoutDecomp")
 REPO_NAME = os.environ.get("BP_GITHUB_REPO", "b5-decomp")
 REPO_REF = os.environ.get("BP_GITHUB_REF", "dev")
 
