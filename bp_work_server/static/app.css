@@ -113,12 +113,11 @@ body.detail-open {
   opacity: 0.05;
   background-image: repeating-linear-gradient(
     0deg,
-    rgba(255, 255, 255, 0.06) 0px,
-    rgba(255, 255, 255, 0.06) 1px,
+    rgba(255, 255, 255, 0.05) 0px,
+    rgba(255, 255, 255, 0.05) 1px,
     transparent 1px,
     transparent 3px
   );
-  mix-blend-mode: overlay;
 }
 
 h1,
@@ -163,8 +162,7 @@ h1,
   justify-content: space-between;
   gap: 24px;
   padding: 14px 28px 18px;
-  background: linear-gradient(180deg, rgba(8, 6, 6, 0.92), rgba(8, 6, 6, 0.55));
-  backdrop-filter: blur(10px);
+  background: linear-gradient(180deg, rgba(8, 6, 6, 0.97), rgba(8, 6, 6, 0.9));
   border-bottom: 2px solid transparent;
   border-image: linear-gradient(90deg, var(--red-deep), var(--red-bright) 40%, transparent 80%) 1;
 }
