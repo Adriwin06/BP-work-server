@@ -98,6 +98,43 @@ def test_no_build_yet_is_404_not_500(tmp_path, monkeypatch):
     assert empty["builds"] == []
 
 
+def test_download_increments_counter(tmp_path, monkeypatch):
+    client, admin, _ = client_with_downloads(tmp_path, monkeypatch)
+    bid = upload(client, admin["token"], make_zip()).json()["id"]
+
+    assert client.get("/api/builds").json()["latest"]["downloads"] == 0
+
+    # a fresh GET (no Range) counts
+    client.get("/download/latest")
+    assert client.get("/api/builds").json()["latest"]["downloads"] == 1
+    client.get(f"/download/{bid}")
+    assert client.get("/api/builds").json()["latest"]["downloads"] == 2
+
+    # a mid-file range request (resume/segment) does NOT double-count
+    client.get(f"/download/{bid}", headers={"Range": "bytes=5-9"})
+    assert client.get("/api/builds").json()["latest"]["downloads"] == 2
+
+    # a range starting at 0 (how some browsers begin) counts as a fresh start
+    client.get(f"/download/{bid}", headers={"Range": "bytes=0-9"})
+    assert client.get("/api/builds").json()["latest"]["downloads"] == 3
+
+
+def test_build_contents_lists_zip(tmp_path, monkeypatch):
+    client, admin, _ = client_with_downloads(tmp_path, monkeypatch)
+    bid = upload(client, admin["token"], make_zip()).json()["id"]
+
+    contents = client.get(f"/api/builds/{bid}/contents")
+    assert contents.status_code == 200
+    body = contents.json()
+    assert body["total_files"] == 2
+    paths = {e["path"] for e in body["entries"]}
+    assert paths == {"Burnout5.exe", "asset.dat"}
+    assert body["total_size"] == len(b"exe") + len(b"asset bytes")
+
+    # unknown build -> 404
+    assert client.get("/api/builds/999/contents").status_code == 404
+
+
 def test_latest_reflects_newest_and_prunes_disk(tmp_path, monkeypatch):
     monkeypatch.setenv("BP_KEEP_BUILDS", "2")
     client, admin, _ = client_with_downloads(tmp_path, monkeypatch)

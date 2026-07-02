@@ -4,14 +4,22 @@ import hashlib
 import logging
 import os
 import re
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from bp_work_server.dependencies import get_store, invalidate_dashboard_cache, require_admin_worker
-from bp_work_server.models import BuildInfo, BuildListResponse
+from bp_work_server.models import (
+    BuildContentsResponse,
+    BuildEntry,
+    BuildInfo,
+    BuildListResponse,
+)
 from bp_work_server.store import WorkStore
+
+_MAX_CONTENTS_ENTRIES = 20000  # guard payload size for zips with huge file counts
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -134,13 +142,61 @@ def list_builds(store: WorkStore = Depends(get_store)) -> BuildListResponse:
     return BuildListResponse(latest=builds[0] if builds else None, builds=builds)
 
 
-def _serve(row: dict | None) -> FileResponse:
+@router.get("/api/builds/{build_id}/contents", response_model=BuildContentsResponse)
+def build_contents(build_id: int, store: WorkStore = Depends(get_store)) -> BuildContentsResponse:
+    """List the files inside a build's zip (from its central directory, no extraction)."""
+    row = store.get_build(build_id)
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such build")
+    path = downloads_dir() / Path(row["filename"]).name
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "build artifact is no longer on disk")
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "not a readable zip") from exc
+
+    entries: list[BuildEntry] = []
+    total_size = 0
+    total_files = 0
+    for info in infos:
+        is_dir = info.is_dir()
+        if not is_dir:
+            total_files += 1
+            total_size += info.file_size
+        if len(entries) < _MAX_CONTENTS_ENTRIES:
+            entries.append(
+                BuildEntry(path=info.filename, size=info.file_size, is_dir=is_dir)
+            )
+    entries.sort(key=lambda e: e.path.lower())
+    return BuildContentsResponse(
+        id=build_id,
+        filename=_friendly_name(row),
+        total_files=total_files,
+        total_size=total_size,
+        truncated=len(infos) > _MAX_CONTENTS_ENTRIES,
+        entries=entries,
+    )
+
+
+def _is_fresh_download(request: Request) -> bool:
+    """True when a request starts a download (vs. a resume/segment fetch of the same
+    file). Browsers issue a click as a Range-less GET or a ``bytes=0-`` GET; segmented
+    downloaders re-request later byte ranges, which we don't want to double-count."""
+    rng = request.headers.get("range")
+    return not rng or rng.replace(" ", "").startswith("bytes=0-")
+
+
+def _serve(request: Request, store: WorkStore, row: dict | None) -> FileResponse:
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no build available")
     path = downloads_dir() / Path(row["filename"]).name
     if not path.is_file():
         # DB row survived but the file was pruned/lost; treat as gone rather than 500.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "build artifact is no longer on disk")
+    if _is_fresh_download(request):
+        store.increment_build_downloads(row["id"])
     return FileResponse(
         path,
         media_type="application/zip",
@@ -149,10 +205,12 @@ def _serve(row: dict | None) -> FileResponse:
 
 
 @router.get("/download/latest")
-def download_latest(store: WorkStore = Depends(get_store)) -> FileResponse:
-    return _serve(store.latest_build())
+def download_latest(request: Request, store: WorkStore = Depends(get_store)) -> FileResponse:
+    return _serve(request, store, store.latest_build())
 
 
 @router.get("/download/{build_id}")
-def download_build(build_id: int, store: WorkStore = Depends(get_store)) -> FileResponse:
-    return _serve(store.get_build(build_id))
+def download_build(
+    build_id: int, request: Request, store: WorkStore = Depends(get_store)
+) -> FileResponse:
+    return _serve(request, store, store.get_build(build_id))

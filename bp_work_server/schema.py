@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS build(
   sha256 TEXT,
   built_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  downloads INTEGER NOT NULL DEFAULT 0,
   notes TEXT
 );
 

@@ -66,19 +66,33 @@
           </div>
         </div>
         <div class="topbar-right">
-          <a
-            id="downloadBuild"
-            class="download-build"
-            href="/download/latest"
-            hidden
-            title="Download the latest build"
-          >
-            <span class="download-icon" aria-hidden="true">⭳</span>
-            <span class="download-text">
-              <strong>Download build</strong>
-              <small id="downloadMeta">latest</small>
+          <div id="downloadGroup" class="download-group" hidden>
+            <a
+              id="downloadBuild"
+              class="download-build"
+              href="/download/latest"
+              title="Download the latest build"
+            >
+              <span class="download-icon" aria-hidden="true">⭳</span>
+              <span class="download-text">
+                <strong>Download build</strong>
+                <small id="downloadMeta">latest</small>
+              </span>
+            </a>
+            <span id="downloadCount" class="download-count" title="Total downloads" hidden>
+              <span class="dc-icon" aria-hidden="true">⭳</span>
+              <span class="dc-num">0</span>
             </span>
-          </a>
+            <button
+              id="downloadPreview"
+              class="download-eye"
+              type="button"
+              title="Preview the files inside this build"
+              aria-label="Preview build contents"
+            >
+              <span aria-hidden="true">◉</span>
+            </button>
+          </div>
           <span id="serverTime" class="server-time">—</span>
           <div class="connection" id="connection">
             <span class="pulse"></span>

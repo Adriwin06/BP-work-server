@@ -254,38 +254,67 @@ h1 .accent {
   gap: 18px;
 }
 
-.download-build {
+/* Download build — a Burnout UI plate: dark metal base, red banner texture on the
+   CTA, gold accents, angled edges to match .connection. */
+.download-group {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  gap: 11px;
-  padding: 8px 18px 8px 15px;
-  text-decoration: none;
-  color: #fff;
-  background: linear-gradient(135deg, var(--red-bright), var(--red-deep));
-  border: 1px solid rgba(236, 28, 36, 0.55);
+  align-items: stretch;
+  height: 40px;
+  border: 1px solid rgba(227, 165, 44, 0.38);
+  background: var(--surface-2);
   box-shadow: var(--glow);
   clip-path: polygon(9px 0, 100% 0, calc(100% - 9px) 100%, 0 100%);
-  transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
+  overflow: hidden;
 }
 
-.download-build[hidden] {
+.download-group[hidden] {
   display: none;
 }
 
+/* gold top strip, echoing the section-header accents */
+.download-group::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: url("/static/img/ui/strip-gold.png") center / 100% 100% no-repeat, var(--gold);
+  opacity: 0.9;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.download-build {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 16px 0 15px;
+  text-decoration: none;
+  color: #fff;
+  background-image: url("/static/img/ui/banner-red.png"),
+    linear-gradient(135deg, var(--red-bright), var(--red-deep));
+  background-repeat: no-repeat, no-repeat;
+  background-position: left center, center;
+  background-size: 62% 165%, 100% 100%;
+  transition: filter 0.12s ease;
+}
+
 .download-build:hover {
-  filter: brightness(1.08);
-  transform: translateY(-1px);
-  box-shadow: 0 0 0 1px rgba(227, 165, 44, 0.5), 0 10px 26px rgba(207, 23, 34, 0.32);
+  filter: brightness(1.1);
 }
 
 .download-build:active {
-  transform: translateY(0);
+  filter: brightness(0.95);
 }
 
 .download-build .download-icon {
   font-size: 20px;
   line-height: 1;
   color: var(--gold);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 .download-build .download-text {
@@ -305,7 +334,73 @@ h1 .accent {
 .download-build .download-text small {
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+/* live download counter */
+.download-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border-left: 1px solid rgba(227, 165, 44, 0.28);
+  color: var(--gold);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.download-count[hidden] {
+  display: none;
+}
+
+.download-count .dc-icon {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+/* eye / preview button */
+.download-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  padding: 0 7px 0 1px;
+  border: none;
+  border-left: 1px solid rgba(227, 165, 44, 0.28);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.download-eye:hover {
+  background: var(--surface-hover);
+  color: var(--gold);
+}
+
+/* build-contents preview (rendered in the shared detail drawer) */
+.zip-summary {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.zip-summary-file {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.zip-summary-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .server-time {

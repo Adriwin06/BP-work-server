@@ -178,6 +178,7 @@ class BuildInfo(BaseModel):
     sha256: str | None = None
     built_at: datetime | None = None
     created_at: datetime | None = None
+    downloads: int = 0
     notes: str | None = None
     download_url: str
 
@@ -185,6 +186,21 @@ class BuildInfo(BaseModel):
 class BuildListResponse(BaseModel):
     latest: BuildInfo | None = None
     builds: list[BuildInfo] = Field(default_factory=list)
+
+
+class BuildEntry(BaseModel):
+    path: str
+    size: int = 0
+    is_dir: bool = False
+
+
+class BuildContentsResponse(BaseModel):
+    id: int
+    filename: str
+    total_files: int = 0
+    total_size: int = 0
+    truncated: bool = False
+    entries: list[BuildEntry] = Field(default_factory=list)
 
 
 class FlexibleModel(BaseModel):

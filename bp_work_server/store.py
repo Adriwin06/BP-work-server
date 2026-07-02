@@ -131,6 +131,9 @@ class WorkStore:
                 con.execute("ALTER TABLE func ADD COLUMN completed_by TEXT")
             if "completed_at" not in cols:
                 con.execute("ALTER TABLE func ADD COLUMN completed_at TEXT")
+            build_cols = {r["name"] for r in con.execute("PRAGMA table_info(build)")}
+            if build_cols and "downloads" not in build_cols:
+                con.execute("ALTER TABLE build ADD COLUMN downloads INTEGER NOT NULL DEFAULT 0")
             self._backfill_missing_dest_paths(con)
         self._migrate_users()
 
@@ -697,6 +700,19 @@ class WorkStore:
                 "SELECT * FROM build ORDER BY id DESC LIMIT ?", (max(1, limit),)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def increment_build_downloads(self, build_id: int) -> int | None:
+        """Bump a build's download counter and return the new total (None if unknown)."""
+        with self.connect() as con:
+            cur = con.execute(
+                "UPDATE build SET downloads = downloads + 1 WHERE id=?", (build_id,)
+            )
+            if cur.rowcount == 0:
+                return None
+            row = con.execute(
+                "SELECT downloads FROM build WHERE id=?", (build_id,)
+            ).fetchone()
+        return int(row["downloads"]) if row else None
 
     def prune_builds(self, keep: int) -> list[dict[str, Any]]:
         """Delete build rows beyond the newest ``keep`` and return the pruned rows.

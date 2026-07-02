@@ -61,7 +61,9 @@ Write-Host "    $($lines.Count) asset files, manifest $($assetManifestHash.Subst
 
 # --- 3. Build ------------------------------------------------------------------
 Step "Configuring + building ($Config)"
-$cfgArgs = @("-S", ".", "-B", $BuildDir)
+# CMAKE_POLICY_VERSION_MINIMUM lets CMake 4.x configure the old vendored EA libs
+# (EABase et al. still declare cmake_minimum_required < 3.5).
+$cfgArgs = @("-S", ".", "-B", $BuildDir, "-DCMAKE_POLICY_VERSION_MINIMUM=3.5")
 if ($CMakeArgs) { $cfgArgs += $CMakeArgs.Split(" ") }
 & cmake @cfgArgs
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }

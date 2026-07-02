@@ -6,6 +6,8 @@ const state = {
   dashboardInFlight: false,
   githubInFlight: false,
   treeCollapsed: {}, // path -> bool, remembers folder state across refreshes
+  zipCollapsed: {}, // same, for the build-contents preview tree
+  latestBuild: null, // most recent published build (for the download button + preview)
   actorProfiles: {},
   repo: { owner: "BurnoutDecomp", name: "b5-decomp", ref: "dev" },
   explorer: {
@@ -725,16 +727,32 @@ async function refreshGithub() {
   }
 }
 
+function setDownloadCount(n) {
+  const chip = el("downloadCount");
+  if (!chip) return;
+  if (n == null) {
+    chip.hidden = true;
+    return;
+  }
+  const num = chip.querySelector(".dc-num");
+  if (num) num.textContent = fmtInt(n);
+  chip.title = `${fmtInt(n)} download${n === 1 ? "" : "s"}`;
+  chip.hidden = false;
+}
+
 async function refreshDownload() {
+  const group = el("downloadGroup");
   const link = el("downloadBuild");
-  if (!link) return;
+  if (!group || !link) return;
   try {
     const data = await fetchJson("/api/builds");
     const latest = data && data.latest;
     if (!latest) {
-      link.hidden = true;
+      group.hidden = true;
+      state.latestBuild = null;
       return;
     }
+    state.latestBuild = latest;
     // Point at the stable per-build URL so browsers cache/resume the right zip.
     link.href = latest.download_url || "/download/latest";
     const parts = [];
@@ -743,10 +761,114 @@ async function refreshDownload() {
     if (latest.size_bytes) parts.push(fmtBytes(latest.size_bytes));
     text("downloadMeta", parts.join(" · ") || "latest");
     link.title = `Download build ${latest.commit_short || latest.commit_sha} (${fmtBytes(latest.size_bytes)})`;
-    link.hidden = false;
+    setDownloadCount(latest.downloads || 0);
+    group.hidden = false;
   } catch (error) {
     // No builds published yet (or endpoint unavailable): keep the button hidden.
-    link.hidden = true;
+    group.hidden = true;
+  }
+}
+
+// Optimistic bump when the user actually starts a download; the server counts it too,
+// and the next refresh reconciles to the authoritative number.
+function onDownloadClick() {
+  if (!state.latestBuild) return;
+  const next = (state.latestBuild.downloads || 0) + 1;
+  state.latestBuild.downloads = next;
+  setDownloadCount(next);
+}
+
+/* ---------------- Build contents preview ---------------- */
+
+function buildZipTree(entries) {
+  const root = { name: "", dir: true, size: 0, children: new Map() };
+  for (const entry of entries || []) {
+    const parts = entry.path.split("/").filter(Boolean);
+    if (!parts.length) continue;
+    let node = root;
+    parts.forEach((part, i) => {
+      const leaf = i === parts.length - 1;
+      let child = node.children.get(part);
+      if (!child) {
+        child = { name: part, dir: !leaf || entry.is_dir, size: 0, children: new Map() };
+        node.children.set(part, child);
+      }
+      if (leaf && !entry.is_dir) child.size = entry.size || 0;
+      node = child;
+    });
+  }
+  // Roll folder sizes up from their files.
+  const sum = (node) => {
+    if (!node.dir) return node.size || 0;
+    let total = 0;
+    for (const child of node.children.values()) total += sum(child);
+    node.size = total;
+    return total;
+  };
+  sum(root);
+  return root;
+}
+
+function renderZipNode(node, depth, container) {
+  const kids = [...node.children.values()].sort((a, b) => {
+    if (a.dir !== b.dir) return a.dir ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  for (const child of kids) {
+    child.path = `${node.path || ""}/${child.name}`;
+    const row = div(child.dir ? "tree-node dir" : "tree-node");
+    row.style.paddingLeft = `${6 + depth * 16}px`;
+    const collapsed = child.path in state.zipCollapsed ? state.zipCollapsed[child.path] : depth >= 1;
+    const twist = span("twist", child.dir ? (collapsed ? "▶" : "▼") : "");
+    row.appendChild(twist);
+    row.appendChild(span("icon", child.dir ? "📁" : "📄"));
+    row.appendChild(span("name", child.name));
+    if (child.size != null) row.appendChild(span("size", fmtBytes(child.size)));
+    container.appendChild(row);
+    if (child.dir) {
+      const box = div("tree-children" + (collapsed ? " collapsed" : ""));
+      renderZipNode(child, depth + 1, box);
+      container.appendChild(box);
+      row.addEventListener("click", () => {
+        const nowCollapsed = !box.classList.contains("collapsed");
+        box.classList.toggle("collapsed", nowCollapsed);
+        twist.textContent = nowCollapsed ? "▶" : "▼";
+        state.zipCollapsed[child.path] = nowCollapsed;
+      });
+    }
+  }
+}
+
+async function openBuildContents(buildId) {
+  if (buildId == null) return;
+  state.zipCollapsed = {};
+  // Standalone drawer view (not part of the TU/profile back-stack).
+  state.detailNav.stack = [];
+  state.detailNav.current = { type: "build", id: buildId };
+  showDetailOverlay();
+  updateDetailBack();
+  text("detailTitle", "Build contents");
+  const body = el("detailBody");
+  body.innerHTML = '<p class="muted-text">Reading zip…</p>';
+  try {
+    const data = await fetchJson(`/api/builds/${buildId}/contents`, 20000);
+    clearNode(body);
+    const summary = div("zip-summary");
+    summary.appendChild(span("zip-summary-file", data.filename));
+    summary.appendChild(
+      span(
+        "zip-summary-meta",
+        `${fmtInt(data.total_files)} files · ${fmtBytes(data.total_size)} uncompressed` +
+          (data.truncated ? " · list truncated" : ""),
+      ),
+    );
+    body.appendChild(summary);
+    const tree = div("file-tree zip-tree");
+    renderZipNode(buildZipTree(data.entries), 0, tree);
+    body.appendChild(tree);
+  } catch (error) {
+    body.innerHTML = "";
+    body.appendChild(div("muted-text", `Failed to read build contents: ${error.message}`));
   }
 }
 
@@ -1345,6 +1467,15 @@ function initExplorer() {
   el("detailOverlay").addEventListener("click", (e) => {
     if (e.target === el("detailOverlay")) closeDetail();
   });
+
+  const previewBtn = el("downloadPreview");
+  if (previewBtn) {
+    previewBtn.addEventListener("click", () => {
+      if (state.latestBuild) openBuildContents(state.latestBuild.id);
+    });
+  }
+  const downloadLink = el("downloadBuild");
+  if (downloadLink) downloadLink.addEventListener("click", onDownloadClick);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeDetail();
   });
