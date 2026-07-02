@@ -254,73 +254,58 @@ h1 .accent {
   gap: 18px;
 }
 
-/* Download build — a Burnout UI plate: dark metal base, red banner texture on the
-   CTA, gold accents, angled edges to match .connection. */
+/* Download build — three angled segments that tile into one bar: a red CTA and two
+   gold paint-strip controls (counter + preview), lifted from the .badge HUD tags.
+   Each seg is the same parallelogram; the gold ones tuck back by the slant width
+   (--slant) so the seams between RED\GOLD\GOLD line up as clean diagonals. */
 .download-group {
-  position: relative;
+  --slant: 10px;
   display: inline-flex;
   align-items: stretch;
   height: 40px;
-  border: 1px solid rgba(227, 165, 44, 0.38);
-  background: var(--surface-2);
-  box-shadow: var(--glow);
-  clip-path: polygon(9px 0, 100% 0, calc(100% - 9px) 100%, 0 100%);
-  overflow: hidden;
+  filter: drop-shadow(0 6px 16px rgba(207, 23, 34, 0.32));
 }
 
 .download-group[hidden] {
   display: none;
 }
 
-/* gold top strip, echoing the section-header accents */
-.download-group::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 2px;
-  background: url("/static/img/ui/strip-gold.png") center / 100% 100% no-repeat, var(--gold);
-  opacity: 0.9;
-  pointer-events: none;
-  z-index: 3;
-}
-
-.download-build {
-  position: relative;
+.download-group .seg {
   display: inline-flex;
   align-items: center;
+  height: 100%;
+  clip-path: polygon(var(--slant) 0, 100% 0, calc(100% - var(--slant)) 100%, 0 100%);
+}
+
+/* red CTA */
+.download-build {
   gap: 11px;
-  padding: 0 16px 0 15px;
+  padding: 0 17px 0 16px;
   text-decoration: none;
   color: #fff;
-  background-image: url("/static/img/ui/banner-red.png"),
-    linear-gradient(135deg, var(--red-bright), var(--red-deep));
-  background-repeat: no-repeat, no-repeat;
-  background-position: left center, center;
-  background-size: 62% 165%, 100% 100%;
+  background: linear-gradient(135deg, #f0242c, #8c161b 78%);
   transition: filter 0.12s ease;
 }
 
 .download-build:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
 }
 
 .download-build:active {
-  filter: brightness(0.95);
+  filter: brightness(0.94);
 }
 
 .download-build .download-icon {
-  font-size: 20px;
-  line-height: 1;
+  width: 18px;
+  height: 18px;
   color: var(--gold);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.5));
 }
 
 .download-build .download-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.15;
+  line-height: 1.13;
 }
 
 .download-build .download-text strong {
@@ -328,7 +313,7 @@ h1 .accent {
   font-weight: 700;
   font-size: 13px;
   text-transform: uppercase;
-  letter-spacing: 0.7px;
+  letter-spacing: 0.8px;
 }
 
 .download-build .download-text small {
@@ -337,18 +322,29 @@ h1 .accent {
   color: rgba(255, 255, 255, 0.82);
 }
 
+/* gold paint-strip base shared by the counter + preview (matches .badge) */
+.download-count,
+.download-eye {
+  margin-left: calc(var(--slant) * -1); /* tuck under the previous segment's slant */
+  border: none;
+  color: #1c1206;
+  background: url("/static/img/ui/strip-gold.png") center / 100% 100% no-repeat, #d89b1f;
+  transition: filter 0.12s ease;
+}
+
+.download-count:hover,
+.download-eye:hover {
+  filter: brightness(1.06);
+}
+
 /* live download counter */
 .download-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 12px;
-  background: rgba(0, 0, 0, 0.35);
-  border-left: 1px solid rgba(227, 165, 44, 0.28);
-  color: var(--gold);
+  gap: 6px;
+  padding: 0 13px 0 16px;
   font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .download-count[hidden] {
@@ -356,29 +352,21 @@ h1 .accent {
 }
 
 .download-count .dc-icon {
-  font-size: 12px;
-  opacity: 0.85;
+  width: 13px;
+  height: 13px;
 }
 
 /* eye / preview button */
 .download-eye {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
-  width: 40px;
-  padding: 0 7px 0 1px;
-  border: none;
-  border-left: 1px solid rgba(227, 165, 44, 0.28);
-  background: rgba(0, 0, 0, 0.35);
-  color: var(--text);
-  font-size: 15px;
+  width: 46px;
+  padding: 0 8px 0 2px;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
 }
 
-.download-eye:hover {
-  background: var(--surface-hover);
-  color: var(--gold);
+.download-eye svg {
+  width: 17px;
+  height: 17px;
 }
 
 /* build-contents preview (rendered in the shared detail drawer) */
