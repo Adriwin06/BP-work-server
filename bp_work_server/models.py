@@ -167,6 +167,26 @@ class ErrorResponse(BaseModel):
     detail: str | None = None
 
 
+class BuildInfo(BaseModel):
+    id: int
+    commit_sha: str
+    commit_short: str | None = None
+    branch: str | None = None
+    asset_manifest_hash: str | None = None
+    filename: str
+    size_bytes: int = 0
+    sha256: str | None = None
+    built_at: datetime | None = None
+    created_at: datetime | None = None
+    notes: str | None = None
+    download_url: str
+
+
+class BuildListResponse(BaseModel):
+    latest: BuildInfo | None = None
+    builds: list[BuildInfo] = Field(default_factory=list)
+
+
 class FlexibleModel(BaseModel):
     model_config = ConfigDict(extra="allow")
 

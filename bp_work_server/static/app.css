@@ -254,6 +254,60 @@ h1 .accent {
   gap: 18px;
 }
 
+.download-build {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 18px 8px 15px;
+  text-decoration: none;
+  color: #fff;
+  background: linear-gradient(135deg, var(--red-bright), var(--red-deep));
+  border: 1px solid rgba(236, 28, 36, 0.55);
+  box-shadow: var(--glow);
+  clip-path: polygon(9px 0, 100% 0, calc(100% - 9px) 100%, 0 100%);
+  transition: transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;
+}
+
+.download-build[hidden] {
+  display: none;
+}
+
+.download-build:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px rgba(227, 165, 44, 0.5), 0 10px 26px rgba(207, 23, 34, 0.32);
+}
+
+.download-build:active {
+  transform: translateY(0);
+}
+
+.download-build .download-icon {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--gold);
+}
+
+.download-build .download-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.download-build .download-text strong {
+  font-family: var(--font-head);
+  font-weight: 700;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+}
+
+.download-build .download-text small {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
 .server-time {
   color: var(--faint);
   font-size: 12px;

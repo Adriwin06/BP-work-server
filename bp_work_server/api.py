@@ -15,7 +15,7 @@ from bp_work_server import __version__
 from bp_work_server.decomp import DecompRepo
 from bp_work_server.dependencies import auth_required
 from bp_work_server.github import GitHubClient
-from bp_work_server.routes import admin, dashboard, events, github, static, work
+from bp_work_server.routes import admin, dashboard, downloads, events, github, static, work
 from bp_work_server.routes.static import static_dir
 from bp_work_server.store import WorkStore
 from bp_work_server.sync import sync_workflow_repo
@@ -96,6 +96,7 @@ def create_app(store: WorkStore | None = None) -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(github.router)
     app.include_router(events.router)
+    app.include_router(downloads.router)
     log.info("BP Work Server app initialized")
     return app
 

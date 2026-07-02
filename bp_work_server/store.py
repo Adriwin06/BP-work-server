@@ -628,6 +628,94 @@ class WorkStore:
             )
             return cur.rowcount
 
+    # --- Published builds -------------------------------------------------
+
+    def record_build(
+        self,
+        *,
+        commit_sha: str,
+        filename: str,
+        size_bytes: int,
+        commit_short: str | None = None,
+        branch: str | None = None,
+        asset_manifest_hash: str | None = None,
+        sha256: str | None = None,
+        built_at: str | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Register a freshly uploaded build zip and return its row as a dict.
+
+        ``filename`` is the on-disk name under ``BP_DOWNLOADS_DIR``; the caller has
+        already written the file. ``built_at`` is when CI produced the artifact
+        (falls back to now); ``created_at`` is when the server accepted it.
+        """
+        now = iso()
+        short = commit_short or (commit_sha[:12] if commit_sha else None)
+        with self.connect() as con:
+            cur = con.execute(
+                """
+                INSERT INTO build(
+                  commit_sha, commit_short, branch, asset_manifest_hash,
+                  filename, size_bytes, sha256, built_at, created_at, notes
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    commit_sha,
+                    short,
+                    branch,
+                    asset_manifest_hash,
+                    filename,
+                    int(size_bytes),
+                    sha256,
+                    built_at or now,
+                    now,
+                    notes,
+                ),
+            )
+            row = con.execute(
+                "SELECT * FROM build WHERE id=?", (cur.lastrowid,)
+            ).fetchone()
+        return dict(row)
+
+    def latest_build(self) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT * FROM build ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_build(self, build_id: int) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute(
+                "SELECT * FROM build WHERE id=?", (build_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_builds(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT * FROM build ORDER BY id DESC LIMIT ?", (max(1, limit),)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def prune_builds(self, keep: int) -> list[dict[str, Any]]:
+        """Delete build rows beyond the newest ``keep`` and return the pruned rows.
+
+        Only the DB rows are removed here; the caller is responsible for deleting
+        the on-disk zips (returned rows carry ``filename``).
+        """
+        if keep < 0:
+            return []
+        with self.connect() as con:
+            stale = con.execute(
+                "SELECT * FROM build ORDER BY id DESC LIMIT -1 OFFSET ?", (keep,)
+            ).fetchall()
+            if stale:
+                con.executemany(
+                    "DELETE FROM build WHERE id=?", [(r["id"],) for r in stale]
+                )
+        return [dict(r) for r in stale]
+
     def export_status(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Reproduce the durable ``progress/status.json`` shape from the live DB.
 

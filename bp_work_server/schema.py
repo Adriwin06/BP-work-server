@@ -79,6 +79,25 @@ CREATE TABLE IF NOT EXISTS attribution_cache(
   PRIMARY KEY(scope, dest_path, function_name, repo_rev)
 );
 
+-- Published game builds. One row per zip a CI runner uploads via POST /admin/builds.
+-- The zip itself lives on disk under BP_DOWNLOADS_DIR (never in the DB); `filename`
+-- is the on-disk name relative to that dir. `commit_sha` is the b5-decomp revision
+-- the exe was built from; `asset_manifest_hash` fingerprints the Drive asset set that
+-- was bundled at the exe's root, so a build is uniquely identified by the pair.
+CREATE TABLE IF NOT EXISTS build(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  commit_sha TEXT NOT NULL,
+  commit_short TEXT,
+  branch TEXT,
+  asset_manifest_hash TEXT,
+  filename TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT,
+  built_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  notes TEXT
+);
+
 CREATE INDEX IF NOT EXISTS ix_tu_status ON tu(status);
 CREATE INDEX IF NOT EXISTS ix_tu_owner ON tu(owner);
 CREATE INDEX IF NOT EXISTS ix_tu_source ON tu(source);
@@ -91,6 +110,7 @@ CREATE INDEX IF NOT EXISTS ix_event_ts ON event(ts);
 CREATE INDEX IF NOT EXISTS ix_event_tu_action ON event(tu_id, action, id);
 CREATE INDEX IF NOT EXISTS ix_attribution_cache_lookup
   ON attribution_cache(scope, dest_path, function_name);
+CREATE INDEX IF NOT EXISTS ix_build_created ON build(created_at);
 """
 
 

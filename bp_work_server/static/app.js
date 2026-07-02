@@ -120,7 +120,8 @@ function fmtBytes(n) {
   if (n == null) return "";
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 function setConnection(mode, label) {
@@ -721,6 +722,31 @@ async function refreshGithub() {
     text("repoDesc", `GitHub data unavailable: ${error.message}`);
   } finally {
     state.githubInFlight = false;
+  }
+}
+
+async function refreshDownload() {
+  const link = el("downloadBuild");
+  if (!link) return;
+  try {
+    const data = await fetchJson("/api/builds");
+    const latest = data && data.latest;
+    if (!latest) {
+      link.hidden = true;
+      return;
+    }
+    // Point at the stable per-build URL so browsers cache/resume the right zip.
+    link.href = latest.download_url || "/download/latest";
+    const parts = [];
+    if (latest.commit_short) parts.push(latest.commit_short);
+    if (latest.built_at) parts.push(relTime(latest.built_at));
+    if (latest.size_bytes) parts.push(fmtBytes(latest.size_bytes));
+    text("downloadMeta", parts.join(" · ") || "latest");
+    link.title = `Download build ${latest.commit_short || latest.commit_sha} (${fmtBytes(latest.size_bytes)})`;
+    link.hidden = false;
+  } catch (error) {
+    // No builds published yet (or endpoint unavailable): keep the button hidden.
+    link.hidden = true;
   }
 }
 
@@ -1986,10 +2012,13 @@ document.addEventListener("keydown", (e) => {
 refresh();
 connectStream();
 refreshGithub();
+refreshDownload();
 initExplorer();
 initMiniPanels();
 // GitHub data changes slowly and is cached server-side; poll gently.
 state.githubTimer = window.setInterval(refreshGithub, 90000);
+// New builds land only when CI publishes; a slow poll keeps the button fresh.
+state.downloadTimer = window.setInterval(refreshDownload, 120000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refresh();
 });
