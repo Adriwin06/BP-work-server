@@ -254,16 +254,16 @@ h1 .accent {
   gap: 18px;
 }
 
-/* Download build — three angled segments that tile into one bar: a red CTA and two
-   gold paint-strip controls (counter + preview), lifted from the .badge HUD tags.
-   Each seg is the same parallelogram; the gold ones tuck back by the slant width
-   (--slant) so the seams between RED\GOLD\GOLD line up as clean diagonals. */
+/* Download build — one angled plate (same clip as .connection) split into a red CTA
+   plus two gold paint-strip controls (counter + preview), styled like the .badge HUD
+   tags. The plate's clip-path trims the corners; children stretch to fill it. */
 .download-group {
-  --slant: 10px;
   display: inline-flex;
   align-items: stretch;
   height: 40px;
-  filter: drop-shadow(0 6px 16px rgba(207, 23, 34, 0.32));
+  box-shadow: var(--glow);
+  clip-path: polygon(9px 0, 100% 0, calc(100% - 9px) 100%, 0 100%);
+  overflow: hidden;
 }
 
 .download-group[hidden] {
@@ -273,8 +273,6 @@ h1 .accent {
 .download-group .seg {
   display: inline-flex;
   align-items: center;
-  height: 100%;
-  clip-path: polygon(var(--slant) 0, 100% 0, calc(100% - var(--slant)) 100%, 0 100%);
 }
 
 /* red CTA */
@@ -322,11 +320,11 @@ h1 .accent {
   color: rgba(255, 255, 255, 0.82);
 }
 
-/* gold paint-strip base shared by the counter + preview (matches .badge) */
+/* gold paint-strip controls (counter + preview), matching .badge */
 .download-count,
 .download-eye {
-  margin-left: calc(var(--slant) * -1); /* tuck under the previous segment's slant */
   border: none;
+  border-left: 1px solid rgba(28, 18, 6, 0.38);
   color: #1c1206;
   background: url("/static/img/ui/strip-gold.png") center / 100% 100% no-repeat, #d89b1f;
   transition: filter 0.12s ease;
@@ -340,7 +338,7 @@ h1 .accent {
 /* live download counter */
 .download-count {
   gap: 6px;
-  padding: 0 13px 0 16px;
+  padding: 0 14px;
   font-family: var(--font-mono);
   font-size: 12.5px;
   font-weight: 700;
@@ -359,8 +357,7 @@ h1 .accent {
 /* eye / preview button */
 .download-eye {
   justify-content: center;
-  width: 46px;
-  padding: 0 8px 0 2px;
+  width: 44px;
   cursor: pointer;
 }
 
